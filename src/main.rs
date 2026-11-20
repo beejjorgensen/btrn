@@ -1,32 +1,50 @@
 mod nntp;
 
+use nntp::active::parse_active_groups;
 use nntp::{NntpSession, DEFAULT_CONNECT_TIMEOUT, DEFAULT_IO_TIMEOUT};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let host = args.next();
-    let port = args.next();
-    let plaintext = args.next().as_deref() == Some("--plaintext");
-
-    let Some(host) = host else {
-        eprintln!("usage: btrn <host> [port] [--plaintext]");
+    let Some(host) = args.next() else {
+        print_usage();
         std::process::exit(2);
     };
 
-    let use_tls = !plaintext;
-    let port = match port {
-        Some(value) => value.parse().unwrap_or_else(|_| {
-            eprintln!("invalid port");
-            std::process::exit(2);
-        }),
-        None => {
-            if use_tls {
-                563
-            } else {
-                119
+    let mut use_tls = true;
+    let mut port = None;
+    let mut selected_group = None;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--plaintext" => use_tls = false,
+            "--group" => {
+                if selected_group.is_some() {
+                    eprintln!("--group may only be specified once");
+                    print_usage();
+                    std::process::exit(2);
+                }
+                selected_group = args.next();
+                if selected_group.is_none() {
+                    eprintln!("--group requires a group name");
+                    print_usage();
+                    std::process::exit(2);
+                }
+            }
+            _ if port.is_none() => {
+                port = Some(argument.parse::<u16>().unwrap_or_else(|_| {
+                    eprintln!("invalid port");
+                    print_usage();
+                    std::process::exit(2);
+                }));
+            }
+            _ => {
+                eprintln!("unexpected argument: {argument}");
+                print_usage();
+                std::process::exit(2);
             }
         }
-    };
+    }
+
+    let port = port.unwrap_or(if use_tls { 563 } else { 119 });
 
     let mut session = match NntpSession::connect(
         &host,
@@ -66,6 +84,26 @@ fn main() {
         std::process::exit(1);
     }
 
+    if let Some(name) = selected_group {
+        match session.select_group(&name) {
+            Ok(group) => {
+                println!(
+                    "{}: {} articles, range {}-{} (count consistent: {})",
+                    group.name,
+                    group.count,
+                    group.first_article,
+                    group.last_article,
+                    group.count_consistent
+                );
+            }
+            Err(error) => {
+                eprintln!("GROUP {name} failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let active = match session.list_active() {
         Ok(response) => response,
         Err(error) => {
@@ -78,12 +116,22 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("{}", active.data.len());
-    for line in active.data {
-        if let Some(group) = line.split(|byte| *byte == b' ').next() {
-            if let Ok(group) = std::str::from_utf8(group) {
-                println!("{group}");
-            }
-        }
+    let groups = parse_active_groups(&active.data);
+    println!("{}", groups.groups.len());
+    for group in groups.groups {
+        println!(
+            "{} {} {} {:?}",
+            group.name, group.first_article, group.last_article, group.posting_status
+        );
     }
+    for invalid in groups.invalid_lines {
+        eprintln!(
+            "ignoring malformed LIST ACTIVE row {}: {:?}",
+            invalid.line_number, invalid.reason
+        );
+    }
+}
+
+fn print_usage() {
+    eprintln!("usage: btrn <host> [port] [--plaintext] [--group <name>]");
 }

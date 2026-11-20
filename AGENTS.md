@@ -25,11 +25,9 @@ This is a from-scratch Rust USENET newsreader. The product specification is in [
 - Preserve existing public behavior; gate intentional behavior changes with tests.
 - Do not introduce async or a runtime until terminal responsiveness or concurrent I/O requires it.
 
-## Testing balance
+## Approximate testing balance
 
-- 60% protocol/model/decoder tests
-- 25% terminal state and snapshot tests
-- 15% critical pseudo-terminal end-to-end journeys
+- Aim for roughly 60% protocol/model/decoder tests, 25% terminal state and snapshot tests, and 15% critical pseudo-terminal end-to-end journeys. Treat these proportions as a planning guide, not a required test-count target.
 
 Use the fake-server protocol fixtures for broad coverage. Reserve real pseudo-terminal automation for authentication, group/thread navigation, unresolved parents, resize, quit/newsrc, and reopen/read-range journeys.
 

@@ -1,3 +1,8 @@
+pub mod active;
+mod group;
+
+use group::GroupSelection;
+
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -310,6 +315,24 @@ impl NntpSession {
     pub fn list_active(&mut self) -> Result<NntpResponse, NntpError> {
         self.execute("LIST ACTIVE", true)
     }
+
+    pub fn select_group(
+        &mut self,
+        name: &str,
+    ) -> Result<GroupSelection, group::GroupSelectionError> {
+        if name.is_empty()
+            || !name.is_ascii()
+            || name
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        {
+            return Err(group::GroupSelectionError::InvalidName);
+        }
+        let response = self
+            .execute(&format!("GROUP {name}"), false)
+            .map_err(group::GroupSelectionError::Transport)?;
+        group::parse_group_response(response, name)
+    }
 }
 
 fn parse_status(line: &[u8]) -> Option<u16> {
@@ -326,6 +349,11 @@ fn parse_status(line: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use active::{
+        parse_active_groups, ActiveGroup, ActiveGroupList, InvalidActiveLine,
+        InvalidActiveLineReason, PostingStatus,
+    };
+    use group::GroupSelectionError;
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::thread;
 
@@ -407,6 +435,8 @@ mod tests {
                     b"215 Active groups\r\n\
                       misc.test 10 1 y\r\n\
                       comp.test 25 20 m\r\n\
+                      legacy.group 40 30 x\r\n\
+                      malformed.group bad 1 n\r\n\
                       .\r\n",
                 )
                 .unwrap();
@@ -425,9 +455,95 @@ mod tests {
         let active = session.list_active().unwrap();
         assert_eq!(active.status, 215);
         assert_eq!(
-            active.data,
-            [b"misc.test 10 1 y".to_vec(), b"comp.test 25 20 m".to_vec()]
+            parse_active_groups(&active.data),
+            ActiveGroupList {
+                groups: [
+                    ActiveGroup {
+                        name: "misc.test".into(),
+                        first_article: 1,
+                        last_article: 10,
+                        posting_status: PostingStatus::Allowed,
+                    },
+                    ActiveGroup {
+                        name: "comp.test".into(),
+                        first_article: 20,
+                        last_article: 25,
+                        posting_status: PostingStatus::Moderated,
+                    },
+                    ActiveGroup {
+                        name: "legacy.group".into(),
+                        first_article: 30,
+                        last_article: 40,
+                        posting_status: PostingStatus::Unknown(b"x".to_vec()),
+                    },
+                ]
+                .to_vec(),
+                invalid_lines: [InvalidActiveLine {
+                    line_number: 4,
+                    reason: InvalidActiveLineReason::ArticleNumber,
+                }]
+                .to_vec(),
+            }
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn selects_group_and_parses_server_article_range() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 10 101 110 comp.test\r\n").unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        let selection = session.select_group("comp.test").unwrap();
+        assert_eq!(selection.name, "comp.test");
+        assert_eq!(selection.count, 10);
+        assert_eq!(selection.first_article, 101);
+        assert_eq!(selection.last_article, 110);
+        assert!(selection.count_consistent);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reports_unknown_group_without_constructing_a_selection() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "GROUP missing.group");
+            stream
+                .write_all(b"411 no such group available\r\n")
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.select_group("missing.group"),
+            Err(GroupSelectionError::UnknownGroup {
+                response: b"411 no such group available".to_vec(),
+            })
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_group_names_that_could_inject_commands() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).unwrap(), 0);
+        });
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.select_group("comp.test\r\nLIST ACTIVE"),
+            Err(GroupSelectionError::InvalidName)
+        );
+        drop(session);
         server.join().unwrap();
     }
 

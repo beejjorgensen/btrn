@@ -9,7 +9,7 @@ description: "Build or update fake NNTP servers and wire fixtures. Use for greet
 
 1. Identify the protocol operation and status path to cover.
 2. Add a small fake-server fixture that writes CRLF on the wire and returns realistic first lines.
-3. Cover success and each relevant failure category: transport, protocol framing, temporary `4xx`, permanent `5xx`, group-not-found, article-not-found, and authentication.
+3. Cover success and the failure cases relevant to this operation, such as transport loss, malformed framing, temporary `4xx`, permanent `5xx`, group/article not found, or authentication. Build broad coverage across the suite rather than requiring every fixture to test unrelated categories.
 4. Keep multiline fixtures exact, including dot-stuffed lines and the terminating dot.
 5. Wire the fixture through protocol parsing and, when relevant, into model types.
 6. Assert status, multiline data, typed errors, and connection closure behavior.
