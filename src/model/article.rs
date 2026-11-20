@@ -31,15 +31,18 @@ impl MessageId {
         if value.len() <= 2 || !value.starts_with(b"<") || !value.ends_with(b">") {
             return None;
         }
-        let inner = &value[1..value.len() - 1];
-        if inner.is_empty()
-            || inner
-                .iter()
-                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control() || *byte == b'<')
+        Self::from_normalized(&value[1..value.len() - 1])
+    }
+
+    pub fn from_normalized(value: &[u8]) -> Option<Self> {
+        if value.is_empty()
+            || value.iter().any(|byte| {
+                byte.is_ascii_whitespace() || byte.is_ascii_control() || matches!(byte, b'<' | b'>')
+            })
         {
             return None;
         }
-        Some(Self(inner.to_vec()))
+        Some(Self(value.to_vec()))
     }
 
     pub fn as_bytes(&self) -> &[u8] {

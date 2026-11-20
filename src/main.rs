@@ -2,6 +2,7 @@ pub mod config;
 pub mod model;
 pub mod nntp;
 pub mod persistence;
+pub mod state;
 pub mod thread;
 
 use nntp::active::parse_active_groups;

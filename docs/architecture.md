@@ -215,7 +215,7 @@ Updates should be based on server article numbers, but article numbers from diff
 * `layout_width`, `layout_height`: current terminal size.
 * `instance_lock`: result of the single-instance lock attempt.
 
-Session state should be changed through explicit operations rather than directly by protocol or rendering code. Suggested operations include:
+Session state should be changed through explicit operations rather than directly by protocol or rendering code. Loading overview metadata updates the in-memory group/article/thread view but never updates read ranges. Marking an article read is a separate explicit operation keyed by group and server article number; it preserves an existing subscription marker and creates a new entry as unsubscribed rather than implicitly subscribing a group. Suggested operations include:
 
 * `connect`, `disconnect`
 * `subscribe_group`, `unsubscribe_group`
