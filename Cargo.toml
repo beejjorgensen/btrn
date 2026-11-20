@@ -1,0 +1,9 @@
+[package]
+name = "btrn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustls = "0.23"
+rustls-native-certs = "0.8"
+

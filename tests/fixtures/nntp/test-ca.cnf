@@ -1,0 +1,18 @@
+[ca]
+default_ca = test_ca
+
+[test_ca]
+database = tests/fixtures/nntp/index.txt
+new_certs_dir = tests/fixtures/nntp
+serial = tests/fixtures/nntp/serial
+default_md = default
+policy = test_policy
+
+[test_policy]
+commonName = supplied
+
+[test_server]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = serverAuth
+subjectAltName = IP:127.0.0.1

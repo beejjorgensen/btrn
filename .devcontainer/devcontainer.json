@@ -1,0 +1,26 @@
+{
+  "name": "Rust",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.checkOnSave": true
+      }
+    }
+  },
+  "containerEnv": {
+    "CARGO_TERM_COLOR": "always",
+    "RUST_BACKTRACE": "1"
+  },
+  "postCreateCommand": "rustup component add rustfmt clippy rust-analyzer",
+  "remoteUser": "vscode"
+}
