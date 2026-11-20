@@ -490,8 +490,9 @@ Full article parsing should occur after a successful multiline response:
 
 * split at the first blank line;
 * unfold continuation lines;
-* reject or preserve malformed header lines for diagnostics;
-* normalize duplicate `From`, `Subject`, and `Date` fields deterministically;
+* preserve malformed header lines in parse diagnostics;
+* preserve duplicate fields in wire order and use the last case-insensitive match for a single-value lookup;
+* preserve header names, values, and body lines as bytes until the decoder boundary;
 * decode RFC 2047 encoded words at the decoder boundary;
 * parse `References`, `In-Reply-To`, and `Message-ID` into normalized message IDs;
 * preserve filtered display headers separately from raw headers.

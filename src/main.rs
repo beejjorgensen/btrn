@@ -1,4 +1,5 @@
 pub mod config;
+pub mod model;
 pub mod nntp;
 pub mod persistence;
 

@@ -17,5 +17,7 @@ applyTo:
 - Pagination fields belong to layout state, not articles or threads.
 - Server article numbers are scoped by group and are not assumed continuous.
 - Preserve unknown overview fields for diagnostics without using a non-Message-ID field as article identity.
+- Keep raw header values and article body bytes undecoded; unfold headers and report malformed lines at the model parser boundary.
+- Preserve duplicate headers in wire order; single-value header lookup should be case-insensitive and deterministically use the last occurrence.
 - Session operations must report explicit success/failure and mutate state only after a successful operation result.
 - Read [architecture](../../docs/architecture.md) for the complete ownership and relationship rules.
