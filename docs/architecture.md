@@ -682,6 +682,13 @@ Keys here:
   * If no groups are marked, go to the next page.
   * If there are no more pages, start reading all groups.
 
+The headless group-selector model is derived from `LIST ACTIVE` results and
+`NewsrcState`. It sorts groups by name, distinguishes subscribed,
+unsubscribed, and untracked groups, and keeps temporary read-selection marks
+separate from persisted subscription state. Cursor movement clamps at either
+end, and marked group names are returned in display order. It does not perform
+network requests or terminal rendering.
+
 ### Thread Selector Screen (per newsgroup)
 
 ```
