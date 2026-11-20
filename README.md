@@ -16,6 +16,15 @@ Select a group and display its server-reported article range:
 cargo run -- news.example.net --group comp.test
 ```
 
+To open the first unread article from a thread, identify the root article
+number from the printed thread summary:
+
+```sh
+cargo run -- news.example.net --group comp.test --thread-root 12345
+```
+
+The root must be present in the configured newest-unread overview window.
+
 The group command loads the configured newest-unread overview window, builds
 threads, and prints each thread's unread/total count and subject. To print the
 previous flat article-number and subject listing instead:

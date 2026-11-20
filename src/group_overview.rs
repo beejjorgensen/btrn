@@ -1,5 +1,6 @@
 use crate::nntp::{NntpSession, OverviewError};
 use crate::persistence::newsrc::plan_unread_chunks;
+use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
 
@@ -15,6 +16,32 @@ pub enum GroupOverviewError {
     Overview(OverviewError),
     State(StateError),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadRootError {
+    State(StateError),
+    OutsideLoadedWindow,
+    NotRoot,
+    NoArticle,
+}
+
+impl std::fmt::Display for ThreadRootError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::State(error) => write!(formatter, "{error}"),
+            Self::OutsideLoadedWindow => {
+                write!(
+                    formatter,
+                    "thread root is outside the loaded overview window"
+                )
+            }
+            Self::NotRoot => write!(formatter, "article number does not identify a thread root"),
+            Self::NoArticle => write!(formatter, "thread has no loaded articles"),
+        }
+    }
+}
+
+impl std::error::Error for ThreadRootError {}
 
 impl std::fmt::Display for GroupOverviewError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +152,29 @@ pub fn format_flat_overview(state: &SessionState, group: &str) -> String {
     output
 }
 
+pub fn first_unread_article_for_thread_root(
+    state: &SessionState,
+    group: &str,
+    root_article_number: u64,
+) -> Result<u64, ThreadRootError> {
+    let group_state = state
+        .groups
+        .get(group)
+        .ok_or(ThreadRootError::State(StateError::GroupNotLoaded))?;
+    let root = group_state
+        .threads
+        .nodes
+        .get(&root_article_number)
+        .ok_or(ThreadRootError::OutsideLoadedWindow)?;
+    if root.parent.is_some() {
+        return Err(ThreadRootError::NotRoot);
+    }
+    ArticleNavigation::from_thread(state, group, root_article_number)
+        .map_err(ThreadRootError::State)?
+        .selected_article_number()
+        .ok_or(ThreadRootError::NoArticle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +240,19 @@ mod tests {
                       .\r\n",
                 )
                 .unwrap();
+            read_command(&mut reader, "HEAD 3");
+            stream
+                .write_all(
+                    b"221 3 <root@b> article retrieved\r\n\
+                      Subject: =?UTF-8?Q?caf=C3=A9?=\r\n\
+                      Content-Type: text/plain; charset=utf-8\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+            read_command(&mut reader, "BODY 3");
+            stream
+                .write_all(b"222 3 <root@b> body follows\r\nhello\r\n.\r\n")
+                .unwrap();
         });
 
         let mut nntp = NntpSession::connect(
@@ -242,6 +305,26 @@ mod tests {
             format_flat_overview(&state, "comp.test"),
             "3 =?UTF-8?Q?caf=C3=A9?=\n4 Re: topic\n5 orphan\n"
         );
+        let target = first_unread_article_for_thread_root(&state, "comp.test", 3).unwrap();
+        assert_eq!(target, 3);
+        let mut article_lines = nntp.article_headers(target).unwrap();
+        article_lines.push(Vec::new());
+        article_lines.extend(nntp.article_body(target).unwrap());
+        let parsed = crate::model::article::RawArticle::parse(&article_lines);
+        let decoded = crate::decoder::decode_article(&parsed.article);
+        assert_eq!(decoded.headers[0].value, "caf\u{e9}");
+        assert_eq!(decoded.body, "hello");
+        let mut rendered = Vec::new();
+        crate::terminal::article_view::present_article(
+            &mut rendered,
+            &mut state,
+            "comp.test",
+            target,
+            &decoded,
+        )
+        .unwrap();
+        assert!(state.is_read("comp.test", target));
+        assert!(String::from_utf8(rendered).unwrap().contains("hello"));
         server.join().unwrap();
     }
 
@@ -272,5 +355,57 @@ mod tests {
             "empty.test: 0 threads, 0 articles, 0 unread\n"
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn chooses_first_unread_article_and_reports_root_outside_loaded_window() {
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    crate::state::LoadedArticle {
+                        article_number: 10,
+                        metadata: crate::model::article::ArticleMetadata {
+                            message_id: crate::model::article::MessageId::parse(b"<root>"),
+                            references: Vec::new(),
+                            in_reply_to: None,
+                            from: None,
+                            subject: None,
+                            date: None,
+                            issues: Vec::new(),
+                        },
+                    },
+                    crate::state::LoadedArticle {
+                        article_number: 20,
+                        metadata: crate::model::article::ArticleMetadata {
+                            message_id: crate::model::article::MessageId::parse(b"<reply>"),
+                            references: vec![
+                                crate::model::article::MessageId::parse(b"<root>").unwrap()
+                            ],
+                            in_reply_to: None,
+                            from: None,
+                            subject: None,
+                            date: None,
+                            issues: Vec::new(),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+        state.mark_article_read("comp.test", 10).unwrap();
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 10),
+            Ok(20)
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 999),
+            Err(ThreadRootError::OutsideLoadedWindow)
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 20),
+            Err(ThreadRootError::NotRoot)
+        );
+        assert!(!state.is_read("comp.test", 20));
     }
 }

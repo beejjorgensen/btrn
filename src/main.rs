@@ -24,6 +24,7 @@ fn main() {
     let mut port = None;
     let mut selected_group = None;
     let mut selected_article = None;
+    let mut selected_thread_root = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--plaintext" => plaintext = true,
@@ -53,6 +54,23 @@ fn main() {
                         .filter(|number| *number > 0)
                         .unwrap_or_else(|| {
                             eprintln!("--article requires a positive article number");
+                            print_usage();
+                            std::process::exit(2);
+                        }),
+                );
+            }
+            "--thread-root" => {
+                if selected_thread_root.is_some() {
+                    eprintln!("--thread-root may only be specified once");
+                    print_usage();
+                    std::process::exit(2);
+                }
+                selected_thread_root = Some(
+                    args.next()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .filter(|number| *number > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--thread-root requires a positive article number");
                             print_usage();
                             std::process::exit(2);
                         }),
@@ -145,6 +163,21 @@ fn main() {
         print_usage();
         std::process::exit(2);
     }
+    if selected_thread_root.is_some() && selected_group.is_none() {
+        eprintln!("--thread-root requires --group");
+        print_usage();
+        std::process::exit(2);
+    }
+    if selected_thread_root.is_some() && selected_article.is_some() {
+        eprintln!("--thread-root cannot be used with --article");
+        print_usage();
+        std::process::exit(2);
+    }
+    if selected_thread_root.is_some() && flat_overview {
+        eprintln!("--thread-root cannot be used with --flat");
+        print_usage();
+        std::process::exit(2);
+    }
     if flat_overview && selected_group.is_none() {
         eprintln!("--flat requires --group");
         print_usage();
@@ -184,7 +217,46 @@ fn main() {
                     newsrc: newsrc.state,
                     ..SessionState::default()
                 };
-                if let Some(article_number) = selected_article {
+                let article_to_present = if let Some(root_article_number) = selected_thread_root {
+                    let loaded = match group_overview::load_group_threads(
+                        &mut session,
+                        &mut state,
+                        &name,
+                        group.first_article,
+                        group.last_article,
+                        config.initial_overview_limit,
+                        config.overview_chunk_size,
+                    ) {
+                        Ok(loaded) => loaded,
+                        Err(error) => {
+                            eprintln!("overview for {name} failed: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    if loaded.invalid_rows > 0 {
+                        eprintln!("ignored {} malformed overview rows", loaded.invalid_rows);
+                    }
+                    if loaded.out_of_range_rows > 0 {
+                        eprintln!(
+                            "ignored {} overview rows outside requested ranges",
+                            loaded.out_of_range_rows
+                        );
+                    }
+                    match group_overview::first_unread_article_for_thread_root(
+                        &state,
+                        &name,
+                        root_article_number,
+                    ) {
+                        Ok(article_number) => Some(article_number),
+                        Err(error) => {
+                            eprintln!("thread root {root_article_number} unavailable: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    selected_article
+                };
+                if let Some(article_number) = article_to_present {
                     let headers = match session.article_headers(article_number) {
                         Ok(headers) => headers,
                         Err(error) => {
@@ -299,7 +371,7 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--flat]\n\
+        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--thread-root <number>] [--flat]\n\
          configure server and optional credentials in ~/.config/btrn/config.toml"
     );
 }

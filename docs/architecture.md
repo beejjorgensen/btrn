@@ -694,6 +694,11 @@ overview chunks into `SessionState`, builds the headless thread list, and prints
 thread summaries with unread counts. `--flat` retains the article-number and
 subject listing for inspecting individual overview rows. The fetch/parse/model
 flow is testable against the fake NNTP server without a live terminal.
+`--group <name> --thread-root <number>` opens the first unread article in a
+loaded thread, falling back to its first article when all are read. It reports
+an explicit error if the requested root is outside the configured overview
+window. The selected article follows the normal fetch, decode, render, and
+post-flush read-marking flow; navigation alone never marks it read.
 
 ### Thread Selector Screen (per newsgroup)
 
