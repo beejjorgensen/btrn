@@ -152,7 +152,7 @@ fn build_rows(group_state: &GroupState, group: &str, state: &SessionState) -> Ve
         .collect()
 }
 
-fn walk_thread(tree: &ThreadTree, root: u64) -> Vec<u64> {
+pub(super) fn walk_thread(tree: &ThreadTree, root: u64) -> Vec<u64> {
     let mut articles = Vec::new();
     let mut pending = vec![root];
     while let Some(number) = pending.pop() {

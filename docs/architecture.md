@@ -201,6 +201,13 @@ the first unread thread (or the first row when all are read), supports explicit
 index selection, and clamps next/previous movement at the list boundaries.
 This view model does not perform terminal rendering or network I/O.
 
+Headless article navigation is created from a loaded thread root and its
+group-scoped read ranges. It starts at the first unread article in deterministic
+thread traversal order, or the first article if the thread is fully read. Next
+and previous operations move across all known articles; next/previous unread
+operations skip read articles and do not wrap at either end. Navigation itself
+does not mutate read state.
+
 ### NewsrcState
 
 `NewsrcState` is the persistent cross-session state for subscription and read-article information.

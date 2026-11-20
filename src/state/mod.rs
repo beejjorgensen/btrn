@@ -1,3 +1,4 @@
+pub mod article_navigation;
 pub mod thread_list;
 
 use crate::model::article::{ArticleMetadata, ArticleMetadataIssue, MessageId};
@@ -29,6 +30,7 @@ pub enum StateError {
     InvalidGroupName,
     InvalidArticleNumber,
     GroupNotLoaded,
+    ThreadNotLoaded,
 }
 
 impl std::fmt::Display for StateError {
@@ -37,6 +39,7 @@ impl std::fmt::Display for StateError {
             Self::InvalidGroupName => write!(formatter, "invalid newsgroup name"),
             Self::InvalidArticleNumber => write!(formatter, "invalid article number"),
             Self::GroupNotLoaded => write!(formatter, "newsgroup metadata has not been loaded"),
+            Self::ThreadNotLoaded => write!(formatter, "thread metadata has not been loaded"),
         }
     }
 }
