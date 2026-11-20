@@ -152,7 +152,10 @@ pub fn run_interactive(
     loop {
         if redraw {
             match reader_state.screen() {
-                ReaderScreen::Threads => render_thread_list(&mut terminal.output, &reader_state)?,
+                ReaderScreen::Threads => {
+                    let (width, height) = terminal::size()?;
+                    render_thread_list(&mut terminal.output, &reader_state, width, height)?;
+                }
                 ReaderScreen::Article => {
                     let article_number = reader_state
                         .selected_article_number()
@@ -170,6 +173,8 @@ pub fn run_interactive(
                     write_terminal_line(
                         &mut terminal.output,
                         format_args!("q: threads  space: next article"),
+                        false,
+                        terminal::size()?.0,
                     )?;
                     terminal.output.flush()?;
                 }
@@ -177,8 +182,14 @@ pub fn run_interactive(
             redraw = false;
         }
 
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let event = event::read()?;
+        let key = match event {
+            Event::Key(key) => key,
+            Event::Resize(_, _) => {
+                redraw = true;
+                continue;
+            }
+            _ => continue,
         };
         match operation_for_key(reader_state.screen(), key) {
             ReaderOperation::Quit => {
@@ -238,21 +249,84 @@ fn fetch_decoded_article(
     Ok(decoded)
 }
 
-fn render_thread_list(output: &mut impl Write, state: &ReaderState) -> io::Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThreadViewport {
+    rows: std::ops::Range<usize>,
+    show_header: bool,
+    show_footer: bool,
+}
+
+impl ThreadViewport {
+    fn new(total_rows: usize, selected_index: Option<usize>, height: u16) -> Self {
+        let height = usize::from(height);
+        let show_header = height >= 2;
+        let show_footer = height >= 3;
+        let row_capacity =
+            height.saturating_sub(usize::from(show_header) + usize::from(show_footer));
+        let selected_index = selected_index.filter(|index| *index < total_rows);
+        let max_start = total_rows.saturating_sub(row_capacity);
+        let start = selected_index
+            .map(|index| index.saturating_add(1).saturating_sub(row_capacity))
+            .unwrap_or(0)
+            .min(max_start);
+        let end = start.saturating_add(row_capacity).min(total_rows);
+        Self {
+            rows: start..end,
+            show_header,
+            show_footer,
+        }
+    }
+}
+
+fn render_thread_list(
+    output: &mut impl Write,
+    state: &ReaderState,
+    width: u16,
+    height: u16,
+) -> io::Result<()> {
+    let viewport = ThreadViewport::new(
+        state.threads.rows.len(),
+        state.threads.selected_index(),
+        height,
+    );
     queue!(
         output,
         Clear(ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    write_terminal_line(
-        output,
-        format_args!(
-            "{} - {} threads",
-            state.threads.group_name,
-            state.threads.rows.len()
-        ),
-    )?;
-    for (index, row) in state.threads.rows.iter().enumerate() {
+    if viewport.show_header {
+        if state.threads.rows.is_empty() {
+            write_terminal_line(
+                output,
+                format_args!("{} - 0 threads", state.threads.group_name),
+                true,
+                width,
+            )?;
+        } else {
+            write_terminal_line(
+                output,
+                format_args!(
+                    "{} - {} threads ({}-{} shown)",
+                    state.threads.group_name,
+                    state.threads.rows.len(),
+                    viewport.rows.start.saturating_add(1),
+                    viewport.rows.end
+                ),
+                true,
+                width,
+            )?;
+        }
+    }
+    if state.threads.rows.is_empty() && height > 0 {
+        write_terminal_line(
+            output,
+            format_args!("No threads"),
+            viewport.show_footer,
+            width,
+        )?;
+    }
+    for index in viewport.rows.clone() {
+        let row = &state.threads.rows[index];
         if state.threads.selected_index() == Some(index) {
             queue!(output, SetAttribute(Attribute::Reverse))?;
         }
@@ -261,28 +335,79 @@ fn render_thread_list(output: &mut impl Write, state: &ReaderState) -> io::Resul
         } else {
             ""
         };
+        let line = format!(
+            "{:>3}/{:<3} {}{} {}",
+            row.unread_count,
+            row.article_numbers.len(),
+            row.root_article_number,
+            unresolved,
+            row.subject
+        );
         write_terminal_line(
             output,
-            format_args!(
-                "{:>3}/{:<3} {}{} {}",
-                row.unread_count,
-                row.article_numbers.len(),
-                row.root_article_number,
-                unresolved,
-                row.subject
-            ),
+            format_args!("{line}"),
+            index + 1 != viewport.rows.end || viewport.show_footer,
+            width,
         )?;
         if state.threads.selected_index() == Some(index) {
             queue!(output, SetAttribute(Attribute::Reset))?;
         }
     }
-    write_terminal_line(output, format_args!("j/k: select  enter: open  q: quit"))?;
+    if viewport.show_footer {
+        write_terminal_line(
+            output,
+            format_args!("j/k: select  enter: open  q: quit"),
+            false,
+            width,
+        )?;
+    }
     output.flush()
 }
 
-fn write_terminal_line(output: &mut impl Write, arguments: fmt::Arguments<'_>) -> io::Result<()> {
-    output.write_fmt(arguments)?;
-    output.write_all(b"\r\n")
+fn write_terminal_line(
+    output: &mut impl Write,
+    arguments: fmt::Arguments<'_>,
+    terminate: bool,
+    width: u16,
+) -> io::Result<()> {
+    let mut line = String::new();
+    fmt::write(&mut line, arguments)
+        .map_err(|_| io::Error::other("could not format terminal line"))?;
+    output.write_all(fit_terminal_line(&line, width).as_bytes())?;
+    if terminate {
+        output.write_all(b"\r\n")?;
+    }
+    Ok(())
+}
+
+fn fit_terminal_line(line: &str, width: u16) -> String {
+    let sanitized: String = line
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect();
+    let width = usize::from(width);
+    if sanitized.len() <= width {
+        return sanitized;
+    }
+
+    let mut fitted = String::new();
+    let prefix_limit = width.saturating_sub('…'.len_utf8());
+    for character in sanitized.chars() {
+        if fitted.len() + character.len_utf8() > prefix_limit {
+            break;
+        }
+        fitted.push(character);
+    }
+    if width > 0 {
+        fitted.push('…');
+    }
+    fitted
 }
 
 #[derive(Debug)]
@@ -433,11 +558,54 @@ mod tests {
         let reader = ReaderState::new(threads);
         let mut output = Vec::new();
 
-        render_thread_list(&mut output, &reader).unwrap();
+        render_thread_list(&mut output, &reader, 80, 24).unwrap();
 
         assert!(output.windows(2).any(|bytes| bytes == b"\r\n"));
         assert!(!output
             .windows(2)
             .any(|bytes| bytes[1] == b'\n' && bytes[0] != b'\r'));
+    }
+
+    #[test]
+    fn thread_viewport_keeps_selection_visible_and_adjusts_to_height() {
+        let viewport = ThreadViewport::new(10, Some(8), 5);
+        assert_eq!(viewport.rows, 6..9);
+        assert!(viewport.show_header);
+        assert!(viewport.show_footer);
+
+        let shorter = ThreadViewport::new(10, Some(8), 4);
+        assert_eq!(shorter.rows, 7..9);
+        assert!(shorter.show_header);
+        assert!(shorter.show_footer);
+    }
+
+    #[test]
+    fn thread_list_render_fits_viewport_without_scrolling_past_last_row() {
+        let mut data = SessionState::default();
+        data.load_articles(
+            "comp.test",
+            (1..=10).map(|number| loaded_article(number, &format!("article-{number}"), None)),
+        )
+        .unwrap();
+        let mut threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        threads.select(8).unwrap();
+        let reader = ReaderState::new(threads);
+        let mut output = Vec::new();
+
+        render_thread_list(&mut output, &reader, 40, 5).unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("article-2"));
+        assert!(!rendered.contains("article-10"));
+        assert_eq!(rendered.matches("\r\n").count(), 4);
+        assert!(!rendered.ends_with("\r\n"));
+    }
+
+    #[test]
+    fn terminal_line_is_sanitized_and_fitted_to_columns() {
+        assert_eq!(fit_terminal_line("ab\u{1b}cdef", 5), "ab…");
+        assert_eq!(fit_terminal_line("a\u{1b}b", 10), "a�b");
+        assert_eq!(fit_terminal_line("abcdef", 1), "…");
+        assert_eq!(fit_terminal_line("okay", 10), "okay");
     }
 }

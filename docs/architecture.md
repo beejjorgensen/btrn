@@ -704,9 +704,11 @@ The initial interactive reader is selected with
 `--group <name> --interactive`. It displays the loaded thread rows, opens a
 selected thread at its first unread article, advances with Space, and returns
 to the thread list with `q` or Backspace. `j`/`k` and arrow keys move the
-thread selection. Terminal raw mode and alternate-screen state are restored on
-exit, including error paths. Screen-specific key dispatch and transitions are
-testable without a terminal or network.
+thread selection. The thread list displays only the rows that fit between its
+header and key hints, keeps the selected row in view, and recalculates its
+viewport after terminal resize. Terminal raw mode and alternate-screen state
+are restored on exit, including error paths. Screen-specific key dispatch and
+transitions are testable without a terminal or network.
 
 ### Thread Selector Screen (per newsgroup)
 
