@@ -19,5 +19,6 @@ applyTo:
 - Preserve unknown overview fields for diagnostics without using a non-Message-ID field as article identity.
 - Keep raw header values and article body bytes undecoded; unfold headers and report malformed lines at the model parser boundary.
 - Preserve duplicate headers in wire order; single-value header lookup should be case-insensitive and deterministically use the last occurrence.
+- Normalize valid message IDs by removing their surrounding angle brackets, and retain malformed identifier bytes in metadata diagnostics rather than using them for relationships.
 - Session operations must report explicit success/failure and mutate state only after a successful operation result.
 - Read [architecture](../../docs/architecture.md) for the complete ownership and relationship rules.

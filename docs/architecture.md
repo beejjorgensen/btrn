@@ -493,6 +493,7 @@ Full article parsing should occur after a successful multiline response:
 * preserve malformed header lines in parse diagnostics;
 * preserve duplicate fields in wire order and use the last case-insensitive match for a single-value lookup;
 * preserve header names, values, and body lines as bytes until the decoder boundary;
+* extract typed `Message-ID`, `References`, and `In-Reply-To` values while retaining diagnostics for malformed identifiers;
 * decode RFC 2047 encoded words at the decoder boundary;
 * parse `References`, `In-Reply-To`, and `Message-ID` into normalized message IDs;
 * preserve filtered display headers separately from raw headers.
