@@ -20,6 +20,7 @@ applyTo:
 - Parse `CAPABILITIES` into typed capabilities and prefer `XOVER` over `OVER` when both are advertised. Use the standard overview format only when the server does not provide one.
 - Parse overview rows by the server-provided field order; preserve article numbers when optional fields are malformed, keep unknown/malformed field bytes for diagnostics, ignore out-of-range rows, and resolve duplicate numbers to the last complete row.
 - Plan initial overview requests from the group's unread newsrc article-number ranges, bounded by `initial_overview_limit` and split into requests no larger than `overview_chunk_size`.
+- Retrieve headers with `HEAD` and bodies with `BODY`; preserve response bytes and distinguish `423`/`430` article-not-found statuses from transport and unexpected-status failures.
 - Never put passwords or authentication arguments in logs or errors.
 - When reconnect/retry behavior is implemented, reconnect once after transport loss and retry temporary `4xx` or `480` authentication challenges at most once. Tests for operations that do not exercise retry behavior need not cover these cases.
 - Never create a `Group` or cached `Article` after an unsuccessful operation.

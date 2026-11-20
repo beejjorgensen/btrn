@@ -60,6 +60,37 @@ impl std::fmt::Display for NntpError {
 
 impl std::error::Error for NntpError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArticleError {
+    Transport(NntpError),
+    InvalidArticleNumber,
+    ArticleNotFound { status: u16, response: Vec<u8> },
+    UnexpectedStatus { status: u16, response: Vec<u8> },
+}
+
+impl std::fmt::Display for ArticleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(error) => write!(formatter, "{error}"),
+            Self::InvalidArticleNumber => write!(formatter, "invalid article number"),
+            Self::ArticleNotFound { status: 423, .. } => {
+                write!(formatter, "article number not found")
+            }
+            Self::ArticleNotFound { status: 430, .. } => {
+                write!(formatter, "article not found")
+            }
+            Self::ArticleNotFound { status, .. } => {
+                write!(formatter, "article not found (status {status})")
+            }
+            Self::UnexpectedStatus { status, .. } => {
+                write!(formatter, "unexpected article response status {status}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ArticleError {}
+
 enum NetworkStream {
     Plain(TcpStream),
     Tls(StreamOwned<ClientConnection, TcpStream>),
@@ -407,6 +438,41 @@ impl NntpSession {
         let rows = overview::ensure_overview_status(response)?;
         Ok(overview::parse_overview_rows(&rows, &format, range))
     }
+
+    pub fn article_headers(&mut self, article_number: u64) -> Result<Vec<Vec<u8>>, ArticleError> {
+        self.fetch_article_part("HEAD", article_number, 221)
+    }
+
+    pub fn article_body(&mut self, article_number: u64) -> Result<Vec<Vec<u8>>, ArticleError> {
+        self.fetch_article_part("BODY", article_number, 222)
+    }
+
+    fn fetch_article_part(
+        &mut self,
+        command: &str,
+        article_number: u64,
+        success_status: u16,
+    ) -> Result<Vec<Vec<u8>>, ArticleError> {
+        if article_number == 0 {
+            return Err(ArticleError::InvalidArticleNumber);
+        }
+        let response = self
+            .execute(&format!("{command} {article_number}"), true)
+            .map_err(ArticleError::Transport)?;
+        if matches!(response.status, 423 | 430) {
+            return Err(ArticleError::ArticleNotFound {
+                status: response.status,
+                response: response.first_line,
+            });
+        }
+        if response.status != success_status {
+            return Err(ArticleError::UnexpectedStatus {
+                status: response.status,
+                response: response.first_line,
+            });
+        }
+        Ok(response.data)
+    }
 }
 
 fn parse_status(line: &[u8]) -> Option<u16> {
@@ -697,6 +763,78 @@ mod tests {
                 last: 30,
             }),
             Err(OverviewError::UnexpectedStatus(503))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetches_article_headers_and_dot_unstuffs_body_bytes() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            read_command(&mut reader, "HEAD 42");
+            stream
+                .write_all(
+                    b"221 42 article headers follow\r\nSubject: test\r\nX-Raw: \xff\r\n.\r\n",
+                )
+                .unwrap();
+
+            read_command(&mut reader, "BODY 42");
+            stream
+                .write_all(b"222 42 article body follows\r\nfirst line\r\n..leading dot\r\n\xffraw\r\n.\r\n")
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.article_headers(42).unwrap(),
+            [b"Subject: test".to_vec(), b"X-Raw: \xff".to_vec()]
+        );
+        assert_eq!(
+            session.article_body(42).unwrap(),
+            [
+                b"first line".to_vec(),
+                b".leading dot".to_vec(),
+                b"\xffraw".to_vec(),
+            ]
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn distinguishes_missing_articles_and_rejects_article_zero() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            read_command(&mut reader, "HEAD 10");
+            stream.write_all(b"423 no such article number\r\n").unwrap();
+
+            read_command(&mut reader, "BODY 11");
+            stream
+                .write_all(b"430 no article with that message-id\r\n")
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.article_headers(0),
+            Err(ArticleError::InvalidArticleNumber)
+        );
+        assert_eq!(
+            session.article_headers(10),
+            Err(ArticleError::ArticleNotFound {
+                status: 423,
+                response: b"423 no such article number".to_vec(),
+            })
+        );
+        assert_eq!(
+            session.article_body(11),
+            Err(ArticleError::ArticleNotFound {
+                status: 430,
+                response: b"430 no article with that message-id".to_vec(),
+            })
         );
         server.join().unwrap();
     }
