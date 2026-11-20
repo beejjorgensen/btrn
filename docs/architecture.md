@@ -700,6 +700,14 @@ an explicit error if the requested root is outside the configured overview
 window. The selected article follows the normal fetch, decode, render, and
 post-flush read-marking flow; navigation alone never marks it read.
 
+The initial interactive reader is selected with
+`--group <name> --interactive`. It displays the loaded thread rows, opens a
+selected thread at its first unread article, advances with Space, and returns
+to the thread list with `q` or Backspace. `j`/`k` and arrow keys move the
+thread selection. Terminal raw mode and alternate-screen state are restored on
+exit, including error paths. Screen-specific key dispatch and transitions are
+testable without a terminal or network.
+
 ### Thread Selector Screen (per newsgroup)
 
 ```

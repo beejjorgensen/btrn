@@ -21,6 +21,7 @@ fn main() {
     let mut host = None;
     let mut plaintext = false;
     let mut flat_overview = false;
+    let mut interactive = false;
     let mut port = None;
     let mut selected_group = None;
     let mut selected_article = None;
@@ -29,6 +30,7 @@ fn main() {
         match argument.as_str() {
             "--plaintext" => plaintext = true,
             "--flat" => flat_overview = true,
+            "--interactive" => interactive = true,
             "--group" => {
                 if selected_group.is_some() {
                     eprintln!("--group may only be specified once");
@@ -188,6 +190,18 @@ fn main() {
         print_usage();
         std::process::exit(2);
     }
+    if interactive && selected_group.is_none() {
+        eprintln!("--interactive requires --group");
+        print_usage();
+        std::process::exit(2);
+    }
+    if interactive
+        && (selected_article.is_some() || selected_thread_root.is_some() || flat_overview)
+    {
+        eprintln!("--interactive cannot be combined with --article, --thread-root, or --flat");
+        print_usage();
+        std::process::exit(2);
+    }
 
     if let Some(name) = selected_group {
         match session.select_group(&name) {
@@ -217,6 +231,36 @@ fn main() {
                     newsrc: newsrc.state,
                     ..SessionState::default()
                 };
+                if interactive {
+                    let loaded = match group_overview::load_group_threads(
+                        &mut session,
+                        &mut state,
+                        &name,
+                        group.first_article,
+                        group.last_article,
+                        config.initial_overview_limit,
+                        config.overview_chunk_size,
+                    ) {
+                        Ok(loaded) => loaded,
+                        Err(error) => {
+                            eprintln!("overview for {name} failed: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let reader = terminal::reader::ReaderState::new(loaded.threads);
+                    let reader_result =
+                        terminal::reader::run_interactive(&mut session, &mut state, reader);
+                    let save_result = state.newsrc.write_atomic(&config.newsrc_path);
+                    if let Err(error) = save_result {
+                        eprintln!("could not write {}: {error}", config.newsrc_path.display());
+                        std::process::exit(1);
+                    }
+                    if let Err(error) = reader_result {
+                        eprintln!("interactive reader failed: {error}");
+                        std::process::exit(1);
+                    }
+                    return;
+                }
                 let article_to_present = if let Some(root_article_number) = selected_thread_root {
                     let loaded = match group_overview::load_group_threads(
                         &mut session,
@@ -371,7 +415,7 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--thread-root <number>] [--flat]\n\
+        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--thread-root <number>] [--flat] [--interactive]\n\
          configure server and optional credentials in ~/.config/btrn/config.toml"
     );
 }
