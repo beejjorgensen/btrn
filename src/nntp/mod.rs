@@ -1,7 +1,12 @@
 pub mod active;
+mod capabilities;
 mod group;
+pub mod overview;
 
+use crate::persistence::newsrc::ArticleRange;
+pub use capabilities::ServerCapabilities;
 use group::GroupSelection;
+pub use overview::{OverviewError, OverviewFormat, OverviewRows};
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -12,8 +17,6 @@ use std::time::Duration;
 
 pub const MAX_LINE_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 16_777_216;
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NntpResponse {
@@ -25,6 +28,7 @@ pub struct NntpResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
     InvalidCommand,
+    UnexpectedStatus(u16),
     MalformedResponse,
     OversizedLine,
     OversizedResponse,
@@ -98,6 +102,9 @@ impl NetworkStream {
 
 pub struct NntpSession {
     stream: BufReader<NetworkStream>,
+    capabilities: Option<ServerCapabilities>,
+    overview_format: Option<OverviewFormat>,
+    selected_group: Option<String>,
 }
 
 impl NntpSession {
@@ -173,6 +180,9 @@ impl NntpSession {
 
         let mut session = Self {
             stream: BufReader::new(network),
+            capabilities: None,
+            overview_format: None,
+            selected_group: None,
         };
         let greeting = session.read_response(false)?;
         let status = greeting.status;
@@ -227,7 +237,8 @@ impl NntpSession {
         };
         let first_line = line.clone();
         let mut data = Vec::new();
-        if multiline {
+        let has_multiline_data = multiline && (100..300).contains(&status);
+        if has_multiline_data {
             let mut decoded_size = 0usize;
             loop {
                 line.clear();
@@ -312,6 +323,24 @@ impl NntpSession {
         self.execute("CAPABILITIES", true)
     }
 
+    pub fn discover_capabilities(&mut self) -> Result<&ServerCapabilities, NntpError> {
+        let response = self.capabilities()?;
+        if response.status != 101 {
+            return Err(NntpError::protocol(ProtocolError::UnexpectedStatus(
+                response.status,
+            )));
+        }
+        self.capabilities = Some(ServerCapabilities::parse(&response.data));
+        Ok(self
+            .capabilities
+            .as_ref()
+            .expect("capabilities were just set"))
+    }
+
+    pub fn server_capabilities(&self) -> Option<&ServerCapabilities> {
+        self.capabilities.as_ref()
+    }
+
     pub fn list_active(&mut self) -> Result<NntpResponse, NntpError> {
         self.execute("LIST ACTIVE", true)
     }
@@ -331,7 +360,52 @@ impl NntpSession {
         let response = self
             .execute(&format!("GROUP {name}"), false)
             .map_err(group::GroupSelectionError::Transport)?;
-        group::parse_group_response(response, name)
+        let selection = group::parse_group_response(response, name)?;
+        self.selected_group = Some(selection.name.clone());
+        Ok(selection)
+    }
+
+    pub fn overview_format(&mut self) -> Result<&OverviewFormat, OverviewError> {
+        if self.overview_format.is_none() {
+            let response = self
+                .execute("LIST OVERVIEW.FMT", true)
+                .map_err(OverviewError::Transport)?;
+            let format = match response.status {
+                215 => OverviewFormat::parse(&response.data),
+                500..=502 => OverviewFormat::standard(),
+                status => return Err(OverviewError::UnexpectedStatus(status)),
+            };
+            self.overview_format = Some(format);
+        }
+        Ok(self
+            .overview_format
+            .as_ref()
+            .expect("overview format was just set"))
+    }
+
+    pub fn list_overview(&mut self, range: ArticleRange) -> Result<OverviewRows, OverviewError> {
+        if range.first == 0 || range.last < range.first {
+            return Err(OverviewError::InvalidRange);
+        }
+        if self.selected_group.is_none() {
+            return Err(OverviewError::NoSelectedGroup);
+        }
+        let capabilities = self
+            .capabilities
+            .as_ref()
+            .ok_or(OverviewError::CapabilitiesNotLoaded)?;
+        if !capabilities.supports_overview() {
+            return Err(OverviewError::Unsupported);
+        }
+        let command = capabilities
+            .overview_command()
+            .ok_or(OverviewError::Unsupported)?;
+        let format = self.overview_format()?.clone();
+        let response = self
+            .execute(&format!("{command} {}-{}", range.first, range.last), true)
+            .map_err(OverviewError::Transport)?;
+        let rows = overview::ensure_overview_status(response)?;
+        Ok(overview::parse_overview_rows(&rows, &format, range))
     }
 }
 
@@ -504,6 +578,208 @@ mod tests {
         assert_eq!(selection.first_article, 101);
         assert_eq!(selection.last_article, 110);
         assert!(selection.count_consistent);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetches_bounded_named_overview_using_advertised_over_command() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nREADER\r\nOVER\r\n.\r\n")
+                .unwrap();
+
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 10 1 10 comp.test\r\n").unwrap();
+
+            read_command(&mut reader, "LIST OVERVIEW.FMT");
+            stream
+                .write_all(
+                    b"215 overview format\r\n\
+                      Subject:\r\n\
+                      From:\r\n\
+                      Date:\r\n\
+                      Message-ID:\r\n\
+                      References:\r\n\
+                      Xref:\r\n\
+                      :bytes\r\n\
+                      :lines\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+
+            read_command(&mut reader, "OVER 4-6");
+            stream
+                .write_all(
+                    b"224 overview follows\r\n\
+                      4\tFirst\tA <a@b>\tdate\t<first@b>\t\tserver comp.test:4\t12\t2\r\n\
+                      malformed\trow\r\n\
+                      7\tOutside\tA <a@b>\tdate\t<outside@b>\t\tserver comp.test:7\t12\t2\r\n\
+                      5\tLast\tA <a@b>\tdate\t<old@b>\t\tserver comp.test:5\t12\t2\r\n\
+                      5\tLast duplicate\tA <a@b>\tdate\t<new@b>\t\tserver comp.test:5\t14\t3\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        let capabilities = session.discover_capabilities().unwrap();
+        assert_eq!(capabilities.overview_command(), Some("OVER"));
+        session.select_group("comp.test").unwrap();
+        let rows = session
+            .list_overview(ArticleRange { first: 4, last: 6 })
+            .unwrap();
+        assert_eq!(
+            rows.articles
+                .iter()
+                .map(|article| article.article_number)
+                .collect::<Vec<_>>(),
+            [4, 5]
+        );
+        assert_eq!(
+            rows.articles[1].subject.as_deref(),
+            Some(b"Last duplicate".as_slice())
+        );
+        assert_eq!(
+            rows.articles[1].message_id.as_deref(),
+            Some(b"new@b".as_slice())
+        );
+        assert_eq!(rows.articles[0].unknown_fields[0].1, b"server comp.test:4");
+        assert_eq!(rows.invalid_rows[0].line_number, 2);
+        assert_eq!(rows.out_of_range_rows, [3]);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetches_unnamed_overview_with_xover_and_handles_empty_and_error_responses() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nXOVER\r\n.\r\n")
+                .unwrap();
+
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 10 1 10 comp.test\r\n").unwrap();
+
+            read_command(&mut reader, "LIST OVERVIEW.FMT");
+            stream.write_all(b"500 format unavailable\r\n").unwrap();
+
+            read_command(&mut reader, "XOVER 20-25");
+            stream.write_all(b"224 overview follows\r\n.\r\n").unwrap();
+
+            read_command(&mut reader, "XOVER 26-30");
+            stream.write_all(b"503 temporary failure\r\n").unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.discover_capabilities().unwrap().overview_command(),
+            Some("XOVER")
+        );
+        session.select_group("comp.test").unwrap();
+        let empty = session
+            .list_overview(ArticleRange {
+                first: 20,
+                last: 25,
+            })
+            .unwrap();
+        assert!(empty.articles.is_empty());
+        assert!(empty.invalid_rows.is_empty());
+        assert_eq!(
+            session.list_overview(ArticleRange {
+                first: 26,
+                last: 30,
+            }),
+            Err(OverviewError::UnexpectedStatus(503))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn plans_newest_unread_group_ranges_and_requests_bounded_chunks() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nOVER\r\n.\r\n")
+                .unwrap();
+
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 10 1 10 comp.test\r\n").unwrap();
+
+            read_command(&mut reader, "LIST OVERVIEW.FMT");
+            stream.write_all(b"500 no format\r\n").unwrap();
+
+            read_command(&mut reader, "OVER 5-6");
+            stream
+                .write_all(b"224 overview\r\n5\tFive\r\n6\tSix\r\n.\r\n")
+                .unwrap();
+
+            read_command(&mut reader, "OVER 9-10");
+            stream
+                .write_all(b"224 overview\r\n9\tNine\r\n10\tTen\r\n.\r\n")
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        session.discover_capabilities().unwrap();
+        let group = session.select_group("comp.test").unwrap();
+        let newsrc = crate::persistence::newsrc::NewsrcState::parse("comp.test: 1-4,7-8");
+        let ranges = crate::persistence::newsrc::plan_unread_chunks(
+            group.first_article,
+            group.last_article,
+            &newsrc.state.entry("comp.test").unwrap().read_ranges,
+            4,
+            2,
+        );
+        assert_eq!(
+            ranges,
+            [
+                ArticleRange { first: 5, last: 6 },
+                ArticleRange { first: 9, last: 10 },
+            ]
+        );
+
+        let mut articles = Vec::new();
+        for range in ranges {
+            articles.extend(session.list_overview(range).unwrap().articles);
+        }
+        assert_eq!(
+            articles
+                .iter()
+                .map(|article| article.article_number)
+                .collect::<Vec<_>>(),
+            [5, 6, 9, 10]
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_overview_requests_without_capabilities_or_valid_range() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 1 1 1 comp.test\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        session.select_group("comp.test").unwrap();
+        assert_eq!(
+            session.list_overview(ArticleRange { first: 1, last: 1 }),
+            Err(OverviewError::CapabilitiesNotLoaded)
+        );
+        assert_eq!(
+            session.list_overview(ArticleRange { first: 0, last: 1 }),
+            Err(OverviewError::InvalidRange)
+        );
         server.join().unwrap();
     }
 
