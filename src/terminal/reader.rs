@@ -1,22 +1,23 @@
 use crate::decoder;
 use crate::nntp::{ArticleError, NntpSession};
 use crate::state::article_navigation::ArticleNavigation;
-use crate::state::thread_list::{ThreadList, ThreadSelectionError};
+use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
 use crate::terminal::article_view::present_article;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderOperation {
     Quit,
-    MoveNext,
-    MovePrevious,
-    OpenSelected,
+    ToggleThread(char),
+    NextPage,
+    PreviousPage,
+    StartSelectedThreads,
     CloseArticle,
     NextArticle,
     Redraw,
@@ -29,15 +30,17 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
     }
     match (screen, key.code) {
         (_, KeyCode::Char('q')) | (_, KeyCode::Esc) => ReaderOperation::Quit,
-        (ReaderScreen::Threads, KeyCode::Down | KeyCode::Char('j')) => ReaderOperation::MoveNext,
-        (ReaderScreen::Threads, KeyCode::Up | KeyCode::Char('k')) => ReaderOperation::MovePrevious,
-        (ReaderScreen::Threads, KeyCode::Enter | KeyCode::Char(' ')) => {
-            ReaderOperation::OpenSelected
-        }
+        (ReaderScreen::Threads, KeyCode::Char('>')) => ReaderOperation::NextPage,
+        (ReaderScreen::Threads, KeyCode::Char('<')) => ReaderOperation::PreviousPage,
+        (ReaderScreen::Threads, KeyCode::Char(' ')) => ReaderOperation::StartSelectedThreads,
         (ReaderScreen::Article, KeyCode::Char(' ')) => ReaderOperation::NextArticle,
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
-        (ReaderScreen::Threads, KeyCode::Char('r')) => ReaderOperation::Redraw,
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
+        (ReaderScreen::Threads, KeyCode::Char(letter))
+            if letter.is_ascii_alphabetic() && letter != 'q' =>
+        {
+            ReaderOperation::ToggleThread(letter.to_ascii_lowercase())
+        }
         _ => ReaderOperation::Ignore,
     }
 }
@@ -52,13 +55,15 @@ pub enum ReaderScreen {
 pub struct ReaderState {
     pub threads: ThreadList,
     pub article_navigation: Option<ArticleNavigation>,
+    thread_page: usize,
+    marked_threads: BTreeSet<u64>,
+    reading_threads: Vec<u64>,
+    reading_thread_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReaderStateError {
     State(StateError),
-    Selection(ThreadSelectionError),
-    NoThreadSelected,
     NoArticleSelected,
 }
 
@@ -66,8 +71,6 @@ impl std::fmt::Display for ReaderStateError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
-            Self::Selection(error) => write!(formatter, "{error}"),
-            Self::NoThreadSelected => write!(formatter, "no thread is selected"),
             Self::NoArticleSelected => write!(formatter, "thread has no loaded articles"),
         }
     }
@@ -80,6 +83,10 @@ impl ReaderState {
         Self {
             threads,
             article_navigation: None,
+            thread_page: 0,
+            marked_threads: BTreeSet::new(),
+            reading_threads: Vec::new(),
+            reading_thread_index: 0,
         }
     }
 
@@ -97,47 +104,105 @@ impl ReaderState {
             .and_then(ArticleNavigation::selected_article_number)
     }
 
-    pub fn move_next_thread(&mut self) {
-        self.threads.select_next();
+    fn toggle_thread(&mut self, root_article_number: u64) {
+        if !self.marked_threads.insert(root_article_number) {
+            self.marked_threads.remove(&root_article_number);
+        }
     }
 
-    pub fn move_previous_thread(&mut self) {
-        self.threads.select_previous();
+    fn toggle_visible_thread(&mut self, letter: char, page: &ThreadPage) {
+        let Some(index) = page.entries.iter().find_map(|entry| {
+            let row = self.threads.rows.get(entry.index)?;
+            (row.unread_count > 0
+                && assigned_thread_letter(page, &self.threads, entry.index) == Some(letter))
+            .then_some(entry.index)
+        }) else {
+            return;
+        };
+        if let Some(row) = self.threads.rows.get(index) {
+            self.toggle_thread(row.root_article_number);
+        }
     }
 
-    pub fn select_thread(&mut self, index: usize) -> Result<(), ReaderStateError> {
-        self.threads
-            .select(index)
-            .map_err(ReaderStateError::Selection)
+    fn next_page(&mut self, page_count: usize) {
+        if self.thread_page + 1 < page_count {
+            self.thread_page += 1;
+        }
     }
 
-    pub fn open_selected_thread(&mut self, state: &SessionState) -> Result<u64, ReaderStateError> {
-        let row = self
-            .threads
-            .selected()
-            .ok_or(ReaderStateError::NoThreadSelected)?;
-        let navigation =
-            ArticleNavigation::from_thread(state, &row.group_name, row.root_article_number)
-                .map_err(ReaderStateError::State)?;
-        let article_number = navigation
-            .selected_article_number()
-            .ok_or(ReaderStateError::NoArticleSelected)?;
-        self.article_navigation = Some(navigation);
-        Ok(article_number)
+    fn previous_page(&mut self) {
+        self.thread_page = self.thread_page.saturating_sub(1);
+    }
+
+    fn normalize_page(&mut self, page_count: usize) {
+        self.thread_page = self.thread_page.min(page_count.saturating_sub(1));
+    }
+
+    fn start_reading(&mut self, state: &SessionState) -> Result<(), ReaderStateError> {
+        self.reading_threads = if self.marked_threads.is_empty() {
+            self.threads
+                .rows
+                .iter()
+                .map(|row| row.root_article_number)
+                .collect()
+        } else {
+            self.threads
+                .rows
+                .iter()
+                .filter(|row| self.marked_threads.contains(&row.root_article_number))
+                .map(|row| row.root_article_number)
+                .collect()
+        };
+        self.reading_thread_index = 0;
+        if self.reading_threads.is_empty() {
+            self.article_navigation = None;
+            return Ok(());
+        }
+        self.open_reading_thread(state)
+    }
+
+    fn open_reading_thread(&mut self, state: &SessionState) -> Result<(), ReaderStateError> {
+        let Some(root) = self.reading_threads.get(self.reading_thread_index).copied() else {
+            self.article_navigation = None;
+            return Err(ReaderStateError::NoArticleSelected);
+        };
+        self.article_navigation = Some(
+            ArticleNavigation::from_thread(state, &self.threads.group_name, root)
+                .map_err(ReaderStateError::State)?,
+        );
+        if self.selected_article_number().is_none() {
+            return Err(ReaderStateError::NoArticleSelected);
+        }
+        Ok(())
     }
 
     pub fn next_article(&mut self) -> Option<u64> {
         self.article_navigation.as_mut()?.next_article()
     }
 
+    fn advance_to_next_thread(&mut self, state: &SessionState) -> Result<bool, ReaderStateError> {
+        if self.reading_thread_index + 1 >= self.reading_threads.len() {
+            self.article_navigation = None;
+            self.reading_threads.clear();
+            return Ok(false);
+        }
+        self.reading_thread_index += 1;
+        self.open_reading_thread(state)?;
+        Ok(true)
+    }
+
     pub fn close_article(&mut self, state: &SessionState) {
         self.article_navigation = None;
+        self.reading_threads.clear();
+        self.reading_thread_index = 0;
         if let Ok(updated) = ThreadList::from_session(state, &self.threads.group_name) {
-            let selected_index = self.threads.selected_index();
             self.threads = updated;
-            if let Some(index) = selected_index.filter(|index| *index < self.threads.rows.len()) {
-                let _ = self.threads.select(index);
-            }
+            self.marked_threads.retain(|root| {
+                self.threads
+                    .rows
+                    .iter()
+                    .any(|row| row.root_article_number == *root)
+            });
         }
     }
 }
@@ -154,7 +219,16 @@ pub fn run_interactive(
             match reader_state.screen() {
                 ReaderScreen::Threads => {
                     let (width, height) = terminal::size()?;
-                    render_thread_list(&mut terminal.output, &reader_state, width, height)?;
+                    let pages = thread_pages(&reader_state.threads, state, height);
+                    reader_state.normalize_page(pages.len());
+                    render_thread_list(
+                        &mut terminal.output,
+                        &reader_state,
+                        state,
+                        &pages,
+                        width,
+                        height,
+                    )?;
                 }
                 ReaderScreen::Article => {
                     let article_number = reader_state
@@ -200,18 +274,38 @@ pub fn run_interactive(
                     break;
                 }
             }
-            ReaderOperation::MoveNext => {
-                reader_state.move_next_thread();
+            ReaderOperation::ToggleThread(letter) => {
+                let (_, height) = terminal::size()?;
+                let pages = thread_pages(&reader_state.threads, state, height);
+                reader_state.normalize_page(pages.len());
+                if let Some(page) = pages.get(reader_state.thread_page) {
+                    reader_state.toggle_visible_thread(letter, page);
+                }
                 redraw = true;
             }
-            ReaderOperation::MovePrevious => {
-                reader_state.move_previous_thread();
-                redraw = true;
+            ReaderOperation::NextPage => {
+                let (_, height) = terminal::size()?;
+                let pages = thread_pages(&reader_state.threads, state, height);
+                let old_page = reader_state.thread_page;
+                reader_state.next_page(pages.len());
+                redraw = old_page != reader_state.thread_page;
             }
-            ReaderOperation::OpenSelected => {
-                reader_state
-                    .open_selected_thread(state)
-                    .map_err(ReaderError::State)?;
+            ReaderOperation::PreviousPage => {
+                let old_page = reader_state.thread_page;
+                reader_state.previous_page();
+                redraw = old_page != reader_state.thread_page;
+            }
+            ReaderOperation::StartSelectedThreads => {
+                let (_, height) = terminal::size()?;
+                let pages = thread_pages(&reader_state.threads, state, height);
+                reader_state.normalize_page(pages.len());
+                if reader_state.thread_page + 1 < pages.len() {
+                    reader_state.next_page(pages.len());
+                } else {
+                    reader_state
+                        .start_reading(state)
+                        .map_err(ReaderError::State)?;
+                }
                 redraw = true;
             }
             ReaderOperation::CloseArticle => {
@@ -219,7 +313,11 @@ pub fn run_interactive(
                 redraw = true;
             }
             ReaderOperation::NextArticle => {
-                if reader_state.next_article().is_none() {
+                if reader_state.next_article().is_none()
+                    && !reader_state
+                        .advance_to_next_thread(state)
+                        .map_err(ReaderError::State)?
+                {
                     reader_state.close_article(state);
                 }
                 redraw = true;
@@ -250,117 +348,246 @@ fn fetch_decoded_article(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ThreadViewport {
-    rows: std::ops::Range<usize>,
-    show_header: bool,
-    show_footer: bool,
+struct ThreadEntry {
+    index: usize,
+    authors: Vec<String>,
+    omitted_authors: usize,
 }
 
-impl ThreadViewport {
-    fn new(total_rows: usize, selected_index: Option<usize>, height: u16) -> Self {
-        let height = usize::from(height);
-        let show_header = height >= 2;
-        let show_footer = height >= 3;
-        let row_capacity =
-            height.saturating_sub(usize::from(show_header) + usize::from(show_footer));
-        let selected_index = selected_index.filter(|index| *index < total_rows);
-        let max_start = total_rows.saturating_sub(row_capacity);
-        let start = selected_index
-            .map(|index| index.saturating_add(1).saturating_sub(row_capacity))
-            .unwrap_or(0)
-            .min(max_start);
-        let end = start.saturating_add(row_capacity).min(total_rows);
-        Self {
-            rows: start..end,
-            show_header,
-            show_footer,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ThreadPage {
+    entries: Vec<ThreadEntry>,
+    end_index: usize,
+}
+
+fn thread_pages(threads: &ThreadList, state: &SessionState, height: u16) -> Vec<ThreadPage> {
+    let mut pages = Vec::new();
+    let capacity = usize::from(height).saturating_sub(2);
+    if capacity == 0 {
+        return vec![ThreadPage::default()];
+    }
+    let mut page = ThreadPage::default();
+    let mut used = 0;
+    for (index, row) in threads.rows.iter().enumerate() {
+        if page.entries.len() == 25 {
+            page.end_index = index;
+            pages.push(page);
+            page = ThreadPage::default();
+            used = 0;
         }
+        let authors = thread_authors(row, state);
+        let entry_lines = authors.len().max(1);
+        if used > 0 && used + entry_lines > capacity {
+            page.end_index = index;
+            pages.push(page);
+            page = ThreadPage::default();
+            used = 0;
+        }
+
+        if entry_lines > capacity {
+            let visible_authors = capacity
+                .saturating_sub(2)
+                .min(authors.len().saturating_sub(1));
+            let omitted_authors = if capacity >= 2 {
+                authors.len().saturating_sub(1 + visible_authors)
+            } else {
+                0
+            };
+            page.entries.push(ThreadEntry {
+                index,
+                authors: authors.into_iter().take(1 + visible_authors).collect(),
+                omitted_authors,
+            });
+            page.end_index = index + 1;
+            pages.push(page);
+            page = ThreadPage::default();
+            used = 0;
+        } else {
+            page.entries.push(ThreadEntry {
+                index,
+                authors,
+                omitted_authors: 0,
+            });
+            used += entry_lines;
+            page.end_index = index + 1;
+        }
+    }
+    if !page.entries.is_empty() || pages.is_empty() {
+        pages.push(page);
+    }
+    pages
+}
+
+fn thread_authors(row: &crate::state::thread_list::ThreadRow, state: &SessionState) -> Vec<String> {
+    let mut article_numbers = row.article_numbers.clone();
+    if let Some(first_unread) = article_numbers
+        .iter()
+        .position(|number| !state.is_read(&row.group_name, *number))
+    {
+        article_numbers.rotate_left(first_unread);
+    }
+    article_numbers
+        .iter()
+        .map(|number| {
+            state
+                .groups
+                .get(&row.group_name)
+                .and_then(|group| group.articles.get(number))
+                .and_then(|metadata| metadata.from.as_deref())
+                .map(|from| crate::decoder::decode_header_value(b"From", from).0)
+                .unwrap_or_else(|| "(unknown author)".to_owned())
+        })
+        .collect()
+}
+
+fn thread_letter(index: usize) -> Option<char> {
+    "abcdefghijklmnoprstuvwxyz".chars().nth(index)
+}
+
+fn assigned_thread_letter(
+    page: &ThreadPage,
+    threads: &ThreadList,
+    row_index: usize,
+) -> Option<char> {
+    let mut letter_index = 0;
+    for entry in &page.entries {
+        if threads.rows.get(entry.index)?.unread_count > 0 {
+            if entry.index == row_index {
+                return thread_letter(letter_index);
+            }
+            letter_index += 1;
+        }
+    }
+    None
+}
+
+fn page_label(index: usize, count: usize, end_index: usize, total: usize) -> String {
+    if count <= 1 {
+        return "All".to_owned();
+    }
+    if index + 1 == count {
+        return "Bot".to_owned();
+    }
+    let percent = if total == 0 {
+        100
+    } else {
+        end_index.saturating_mul(100).div_ceil(total)
+    };
+    if index == 0 {
+        format!("Top {percent}%")
+    } else {
+        format!("{percent}%")
     }
 }
 
 fn render_thread_list(
     output: &mut impl Write,
-    state: &ReaderState,
+    reader: &ReaderState,
+    state: &SessionState,
+    pages: &[ThreadPage],
     width: u16,
     height: u16,
 ) -> io::Result<()> {
-    let viewport = ThreadViewport::new(
-        state.threads.rows.len(),
-        state.threads.selected_index(),
-        height,
+    if height == 0 {
+        return output.flush();
+    }
+    let page_index = reader.thread_page.min(pages.len().saturating_sub(1));
+    let page = pages.get(page_index).cloned().unwrap_or_default();
+    let page_position = page_label(
+        page_index,
+        pages.len(),
+        page.end_index,
+        reader.threads.rows.len(),
     );
+    let article_count = reader
+        .threads
+        .rows
+        .iter()
+        .map(|row| row.article_numbers.len())
+        .sum::<usize>();
     queue!(
         output,
         Clear(ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    if viewport.show_header {
-        if state.threads.rows.is_empty() {
-            write_terminal_line(
-                output,
-                format_args!("{} - 0 threads", state.threads.group_name),
-                true,
-                width,
-            )?;
-        } else {
-            write_terminal_line(
-                output,
-                format_args!(
-                    "{} - {} threads ({}-{} shown)",
-                    state.threads.group_name,
-                    state.threads.rows.len(),
-                    viewport.rows.start.saturating_add(1),
-                    viewport.rows.end
-                ),
-                true,
-                width,
-            )?;
+    write_terminal_line(
+        output,
+        format_args!(
+            "{}          {} articles",
+            reader.threads.group_name, article_count
+        ),
+        height >= 2,
+        width,
+    )?;
+    if height < 3 {
+        if height == 2 {
+            write_terminal_line(output, format_args!("-- {page_position} --"), false, width)?;
         }
+        return output.flush();
     }
-    if state.threads.rows.is_empty() && height > 0 {
-        write_terminal_line(
-            output,
-            format_args!("No threads"),
-            viewport.show_footer,
-            width,
-        )?;
+    if reader.threads.rows.is_empty() {
+        write_terminal_line(output, format_args!("No threads"), true, width)?;
     }
-    for index in viewport.rows.clone() {
-        let row = &state.threads.rows[index];
-        if state.threads.selected_index() == Some(index) {
-            queue!(output, SetAttribute(Attribute::Reverse))?;
-        }
+    for entry in &page.entries {
+        let row = &reader.threads.rows[entry.index];
+        let letter = assigned_thread_letter(&page, &reader.threads, entry.index).unwrap_or(' ');
+        let marked = reader.marked_threads.contains(&row.root_article_number);
+        let first_unread = row
+            .article_numbers
+            .iter()
+            .find(|number| !state.is_read(&row.group_name, **number))
+            .copied()
+            .or_else(|| row.article_numbers.first().copied());
+        let author = entry
+            .authors
+            .first()
+            .map(String::as_str)
+            .unwrap_or("(unknown author)");
         let unresolved = if row.has_unresolved_parent {
             " (?)"
         } else {
             ""
         };
+        let lead = first_unread
+            .and_then(|number| {
+                state
+                    .groups
+                    .get(&row.group_name)
+                    .and_then(|group| group.articles.get(&number))
+            })
+            .and_then(|metadata| metadata.subject.as_deref())
+            .map(|subject| crate::decoder::decode_header_value(b"Subject", subject).0)
+            .unwrap_or_else(|| row.subject.clone());
         let line = format!(
-            "{:>3}/{:<3} {}{} {}",
+            "{}{} {:<20} {:>3}  >{}{}",
+            letter,
+            if marked && letter != ' ' { "+" } else { " " },
+            author,
             row.unread_count,
-            row.article_numbers.len(),
-            row.root_article_number,
-            unresolved,
-            row.subject
+            lead,
+            unresolved
         );
-        write_terminal_line(
-            output,
-            format_args!("{line}"),
-            index + 1 != viewport.rows.end || viewport.show_footer,
-            width,
-        )?;
-        if state.threads.selected_index() == Some(index) {
-            queue!(output, SetAttribute(Attribute::Reset))?;
+        write_terminal_line(output, format_args!("{line}"), true, width)?;
+        for author in entry.authors.iter().skip(1) {
+            write_terminal_line(output, format_args!("  {author}"), true, width)?;
+        }
+        if entry.omitted_authors > 0 {
+            write_terminal_line(
+                output,
+                format_args!("  ... etc. [{} lines total]", entry.omitted_authors),
+                true,
+                width,
+            )?;
         }
     }
-    if viewport.show_footer {
-        write_terminal_line(
-            output,
-            format_args!("j/k: select  enter: open  q: quit"),
-            false,
-            width,
-        )?;
-    }
+    write_terminal_line(
+        output,
+        format_args!(
+            "-- Select threads (date order) -- {page_position} --  < > / Space: page  q: quit"
+        ),
+        false,
+        width,
+    )?;
     output.flush()
 }
 
@@ -487,12 +714,27 @@ mod tests {
                     .map(|parent| vec![MessageId::parse(format!("<{parent}>").as_bytes()).unwrap()])
                     .unwrap_or_default(),
                 in_reply_to: None,
-                from: None,
-                subject: Some(id.as_bytes().to_vec()),
+                from: Some(format!("author-{id}").into_bytes()),
+                subject: Some(format!("subject-{id}").into_bytes()),
                 date: None,
                 issues: Vec::new(),
             },
         }
+    }
+
+    fn session_with_threads(count: u64) -> SessionState {
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                (1..=count).map(|number| loaded_article(number, &format!("thread-{number}"), None)),
+            )
+            .unwrap();
+        state
+    }
+
+    fn reader_for(state: &SessionState) -> ReaderState {
+        ReaderState::new(ThreadList::from_session(state, "comp.test").unwrap())
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -500,14 +742,32 @@ mod tests {
     }
 
     #[test]
-    fn key_bindings_are_screen_specific() {
+    fn thread_pager_keys_are_literal_and_screen_specific() {
+        assert_eq!(thread_letter(16), Some('r'));
+        assert_eq!(thread_letter(25), None);
         assert_eq!(
             operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('j'))),
-            ReaderOperation::MoveNext
+            ReaderOperation::ToggleThread('j')
         );
         assert_eq!(
             operation_for_key(ReaderScreen::Article, key(KeyCode::Char('j'))),
             ReaderOperation::Ignore
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('>'))),
+            ReaderOperation::NextPage
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('<'))),
+            ReaderOperation::PreviousPage
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Right)),
+            ReaderOperation::Ignore
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('q'))),
+            ReaderOperation::Quit
         );
         assert_eq!(
             operation_for_key(ReaderScreen::Article, key(KeyCode::Char(' '))),
@@ -515,90 +775,148 @@ mod tests {
         );
         assert_eq!(
             operation_for_key(ReaderScreen::Threads, key(KeyCode::Char(' '))),
-            ReaderOperation::OpenSelected
+            ReaderOperation::StartSelectedThreads
         );
     }
 
     #[test]
-    fn transitions_open_thread_advance_and_return_without_marking_read() {
+    fn marks_persist_across_pages_and_space_starts_marked_threads_on_last_page() {
+        let data = session_with_threads(5);
+        let mut reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 4);
+        assert_eq!(pages.len(), 3);
+
+        reader.toggle_visible_thread('a', &pages[0]);
+        assert!(reader.marked_threads.contains(&5));
+        let mut output = Vec::new();
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 4).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("a+"));
+        reader.toggle_visible_thread('a', &pages[0]);
+        assert!(!reader.marked_threads.contains(&5));
+        reader.toggle_visible_thread('a', &pages[0]);
+        assert!(reader.marked_threads.contains(&5));
+        reader.next_page(pages.len());
+        reader.toggle_visible_thread('b', &pages[1]);
+        assert!(reader.marked_threads.contains(&2));
+        reader.next_page(pages.len());
+        reader.start_reading(&data).unwrap();
+
+        assert_eq!(reader.screen(), ReaderScreen::Article);
+        assert_eq!(reader.selected_article_number(), Some(5));
+        assert_eq!(reader.reading_threads, [5, 2]);
+        assert!(!data.is_read("comp.test", 5));
+    }
+
+    #[test]
+    fn space_advances_until_last_page_then_unmarked_means_all_threads() {
+        let data = session_with_threads(5);
+        let mut reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 4);
+        reader.next_page(pages.len());
+        assert_eq!(reader.thread_page, 1);
+        reader.next_page(pages.len());
+        assert_eq!(reader.thread_page, 2);
+        reader.start_reading(&data).unwrap();
+        assert_eq!(reader.reading_threads, [5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn previous_and_next_page_clamp_at_ends_and_resize_clamps_page_index() {
+        let data = session_with_threads(5);
+        let mut reader = reader_for(&data);
+        let small_pages = thread_pages(&reader.threads, &data, 4);
+        reader.previous_page();
+        assert_eq!(reader.thread_page, 0);
+        reader.next_page(small_pages.len());
+        reader.next_page(small_pages.len());
+        reader.next_page(small_pages.len());
+        assert_eq!(reader.thread_page, 2);
+
+        let large_pages = thread_pages(&reader.threads, &data, 20);
+        reader.normalize_page(large_pages.len());
+        assert_eq!(reader.thread_page, 0);
+    }
+
+    #[test]
+    fn thread_pages_keep_complete_entries_and_truncate_a_too_long_thread() {
         let mut data = SessionState::default();
         data.load_articles(
             "comp.test",
             [
                 loaded_article(10, "root", None),
-                loaded_article(30, "reply", Some("root")),
-                loaded_article(50, "other", None),
+                loaded_article(11, "reply-1", Some("root")),
+                loaded_article(12, "reply-2", Some("reply-1")),
+                loaded_article(13, "reply-3", Some("reply-2")),
+                loaded_article(1, "other", None),
             ],
         )
         .unwrap();
         let threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        let pages = thread_pages(&threads, &data, 5);
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].entries[0].index, 0);
+        assert_eq!(pages[0].entries[0].omitted_authors, 2);
+        assert_eq!(pages[1].entries[0].index, 1);
+
         let mut reader = ReaderState::new(threads);
-        reader.select_thread(1).unwrap();
-        assert_eq!(reader.screen(), ReaderScreen::Threads);
-        assert_eq!(reader.open_selected_thread(&data), Ok(10));
-        assert_eq!(reader.screen(), ReaderScreen::Article);
-        assert_eq!(reader.next_article(), Some(30));
-        assert_eq!(reader.next_article(), None);
-        assert!(!data.is_read("comp.test", 10));
-        assert!(!data.is_read("comp.test", 30));
-        reader.close_article(&data);
-        assert_eq!(reader.screen(), ReaderScreen::Threads);
-        assert_eq!(
-            reader.threads.selected().map(|row| row.root_article_number),
-            Some(10)
-        );
-    }
-
-    #[test]
-    fn thread_list_uses_crlf_line_endings() {
-        let mut data = SessionState::default();
-        data.load_articles("comp.test", [loaded_article(10, "root", None)])
-            .unwrap();
-        let threads = ThreadList::from_session(&data, "comp.test").unwrap();
-        let reader = ReaderState::new(threads);
+        reader.thread_page = 0;
         let mut output = Vec::new();
-
-        render_thread_list(&mut output, &reader, 80, 24).unwrap();
-
-        assert!(output.windows(2).any(|bytes| bytes == b"\r\n"));
-        assert!(!output
-            .windows(2)
-            .any(|bytes| bytes[1] == b'\n' && bytes[0] != b'\r'));
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 5).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("... etc. [2 lines total]"));
+        assert!(!rendered.contains("author-reply-3"));
+        assert!(rendered.contains("Top 50%"));
+        assert_eq!(rendered.matches("\r\n").count(), 4);
+        assert!(!rendered.ends_with("\r\n"));
     }
 
     #[test]
-    fn thread_viewport_keeps_selection_visible_and_adjusts_to_height() {
-        let viewport = ThreadViewport::new(10, Some(8), 5);
-        assert_eq!(viewport.rows, 6..9);
-        assert!(viewport.show_header);
-        assert!(viewport.show_footer);
-
-        let shorter = ThreadViewport::new(10, Some(8), 4);
-        assert_eq!(shorter.rows, 7..9);
-        assert!(shorter.show_header);
-        assert!(shorter.show_footer);
-    }
-
-    #[test]
-    fn thread_list_render_fits_viewport_without_scrolling_past_last_row() {
+    fn page_breaks_before_a_complete_thread_that_would_not_fit() {
         let mut data = SessionState::default();
         data.load_articles(
             "comp.test",
-            (1..=10).map(|number| loaded_article(number, &format!("article-{number}"), None)),
+            [
+                loaded_article(10, "root", None),
+                loaded_article(11, "reply", Some("root")),
+                loaded_article(1, "other", None),
+            ],
         )
         .unwrap();
-        let mut threads = ThreadList::from_session(&data, "comp.test").unwrap();
-        threads.select(8).unwrap();
-        let reader = ReaderState::new(threads);
+        let threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        let pages = thread_pages(&threads, &data, 4);
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].entries.len(), 1);
+        assert_eq!(pages[0].entries[0].index, 0);
+        assert_eq!(pages[0].entries[0].omitted_authors, 0);
+        assert_eq!(pages[1].entries[0].index, 1);
+    }
+
+    #[test]
+    fn empty_thread_list_does_not_enter_article_view() {
+        let mut data = SessionState::default();
+        data.load_articles("comp.test", std::iter::empty::<LoadedArticle>())
+            .unwrap();
+        let mut reader = reader_for(&data);
+
+        reader.start_reading(&data).unwrap();
+
+        assert_eq!(reader.screen(), ReaderScreen::Threads);
+    }
+
+    #[test]
+    fn fully_read_threads_have_no_letter_assignment() {
+        let mut data = session_with_threads(1);
+        data.mark_article_read("comp.test", 1).unwrap();
+        let reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 5);
         let mut output = Vec::new();
 
-        render_thread_list(&mut output, &reader, 40, 5).unwrap();
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 5).unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(rendered.contains("article-2"));
-        assert!(!rendered.contains("article-10"));
-        assert_eq!(rendered.matches("\r\n").count(), 4);
-        assert!(!rendered.ends_with("\r\n"));
+        assert!(rendered.contains("   author-thread-1"));
+        assert_eq!(assigned_thread_letter(&pages[0], &reader.threads, 0), None);
     }
 
     #[test]
@@ -607,5 +925,19 @@ mod tests {
         assert_eq!(fit_terminal_line("a\u{1b}b", 10), "a�b");
         assert_eq!(fit_terminal_line("abcdef", 1), "…");
         assert_eq!(fit_terminal_line("okay", 10), "okay");
+    }
+
+    #[test]
+    fn reading_queue_advances_to_next_thread_and_returns_after_final_thread() {
+        let data = session_with_threads(2);
+        let mut reader = reader_for(&data);
+        reader.marked_threads.insert(2);
+        reader.marked_threads.insert(1);
+        reader.start_reading(&data).unwrap();
+        assert_eq!(reader.selected_article_number(), Some(2));
+        assert!(reader.advance_to_next_thread(&data).unwrap());
+        assert_eq!(reader.selected_article_number(), Some(1));
+        assert!(!reader.advance_to_next_thread(&data).unwrap());
+        assert_eq!(reader.screen(), ReaderScreen::Threads);
     }
 }
