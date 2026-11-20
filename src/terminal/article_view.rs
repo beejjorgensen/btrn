@@ -16,15 +16,15 @@ pub fn render_article_view(
     queue!(output, Clear(ClearType::All), MoveTo(0, 0))?;
     writeln!(output, "{group} - article {article_number}")?;
     for header in &article.headers {
-        write_terminal_bytes(output, header.name.as_bytes())?;
+        write_terminal_bytes(output, header.name.as_bytes(), true)?;
         output.write_all(b": ")?;
-        write_terminal_bytes(output, header.value.as_bytes())?;
+        write_terminal_bytes(output, header.value.as_bytes(), true)?;
         output.write_all(b"\r\n")?;
     }
     output.write_all(b"\r\n")?;
     if !article.body.is_empty() {
         for line in article.body.split('\n') {
-            write_terminal_bytes(output, line.as_bytes())?;
+            write_terminal_bytes(output, line.as_bytes(), false)?;
             output.write_all(b"\r\n")?;
         }
     }
@@ -45,9 +45,15 @@ pub fn present_article(
         .map_err(PresentArticleError::State)
 }
 
-fn write_terminal_bytes(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+fn write_terminal_bytes(
+    output: &mut impl Write,
+    bytes: &[u8],
+    tabs_as_spaces: bool,
+) -> io::Result<()> {
     for character in String::from_utf8_lossy(bytes).chars() {
-        if character.is_control() {
+        if character == '\t' && tabs_as_spaces {
+            output.write_all(b" ")?;
+        } else if character.is_control() {
             output.write_all("\u{fffd}".as_bytes())?;
         } else {
             let mut encoded = [0; 4];
@@ -105,7 +111,7 @@ mod tests {
         let raw = RawArticle {
             headers: vec![HeaderField {
                 name: b"Subject".to_vec(),
-                value: b"hello\x1b[31m".to_vec(),
+                value: b"hello\tthere\x1b[31m".to_vec(),
             }],
             body: vec![b"body".to_vec()],
         };
@@ -122,7 +128,7 @@ mod tests {
         let text = String::from_utf8(output.bytes).unwrap();
         assert!(text.contains("comp.test"));
         assert!(text.contains("article 9"));
-        assert!(text.contains("hello\u{fffd}[31m"));
+        assert!(text.contains("hello there\u{fffd}[31m"));
         assert!(text.contains("body"));
     }
 
