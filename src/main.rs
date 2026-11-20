@@ -1,5 +1,6 @@
 pub mod config;
 pub mod decoder;
+pub mod group_overview;
 pub mod model;
 pub mod nntp;
 pub mod persistence;
@@ -10,7 +11,7 @@ pub mod thread;
 use model::article::RawArticle;
 use nntp::active::parse_active_groups;
 use nntp::NntpSession;
-use persistence::newsrc::{plan_unread_chunks, NewsrcState};
+use persistence::newsrc::NewsrcState;
 use state::SessionState;
 use std::fs;
 use std::io;
@@ -19,12 +20,14 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mut host = None;
     let mut plaintext = false;
+    let mut flat_overview = false;
     let mut port = None;
     let mut selected_group = None;
     let mut selected_article = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--plaintext" => plaintext = true,
+            "--flat" => flat_overview = true,
             "--group" => {
                 if selected_group.is_some() {
                     eprintln!("--group may only be specified once");
@@ -142,6 +145,16 @@ fn main() {
         print_usage();
         std::process::exit(2);
     }
+    if flat_overview && selected_group.is_none() {
+        eprintln!("--flat requires --group");
+        print_usage();
+        std::process::exit(2);
+    }
+    if flat_overview && selected_article.is_some() {
+        eprintln!("--flat cannot be used with --article");
+        print_usage();
+        std::process::exit(2);
+    }
 
     if let Some(name) = selected_group {
         match session.select_group(&name) {
@@ -212,33 +225,34 @@ fn main() {
                     }
                     return;
                 }
-                let read_ranges = state
-                    .newsrc
-                    .entry(&name)
-                    .map_or(&[][..], |entry| entry.read_ranges.as_slice());
-                let ranges = plan_unread_chunks(
+                let loaded = match group_overview::load_group_threads(
+                    &mut session,
+                    &mut state,
+                    &name,
                     group.first_article,
                     group.last_article,
-                    read_ranges,
                     config.initial_overview_limit,
                     config.overview_chunk_size,
-                );
-                for range in ranges {
-                    let overview = match session.list_overview(range) {
-                        Ok(rows) => rows,
-                        Err(error) => {
-                            eprintln!("overview {}-{} failed: {error}", range.first, range.last);
-                            std::process::exit(1);
-                        }
-                    };
-                    for article in overview.articles {
-                        let subject = article
-                            .subject
-                            .as_deref()
-                            .map(String::from_utf8_lossy)
-                            .unwrap_or_default();
-                        println!("{} {}", article.article_number, subject);
+                ) {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        eprintln!("overview for {name} failed: {error}");
+                        std::process::exit(1);
                     }
+                };
+                if loaded.invalid_rows > 0 {
+                    eprintln!("ignored {} malformed overview rows", loaded.invalid_rows);
+                }
+                if loaded.out_of_range_rows > 0 {
+                    eprintln!(
+                        "ignored {} overview rows outside requested ranges",
+                        loaded.out_of_range_rows
+                    );
+                }
+                if flat_overview {
+                    print!("{}", group_overview::format_flat_overview(&state, &name));
+                } else {
+                    print!("{}", group_overview::format_thread_summary(&loaded));
                 }
             }
             Err(error) => {
@@ -285,7 +299,7 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>]\n\
+        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--flat]\n\
          configure server and optional credentials in ~/.config/btrn/config.toml"
     );
 }

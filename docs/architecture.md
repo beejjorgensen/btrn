@@ -689,6 +689,12 @@ separate from persisted subscription state. Cursor movement clamps at either
 end, and marked group names are returned in display order. It does not perform
 network requests or terminal rendering.
 
+The non-interactive `--group` command loads the configured newest-unread
+overview chunks into `SessionState`, builds the headless thread list, and prints
+thread summaries with unread counts. `--flat` retains the article-number and
+subject listing for inspecting individual overview rows. The fetch/parse/model
+flow is testable against the fake NNTP server without a live terminal.
+
 ### Thread Selector Screen (per newsgroup)
 
 ```
