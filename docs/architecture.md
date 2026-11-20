@@ -196,7 +196,7 @@ The hierarchy should support:
 
 Newsrc parsing must distinguish a missing entry, a subscribed entry, and an unsubscribed entry. Range parsing must handle reversed ranges, duplicate ranges, out-of-order ranges, open-ended data, and malformed input without silently corrupting existing state.
 
-Updates should be based on server article numbers, but article numbers from different groups must be stored separately. Writes to disk should be atomic and preserve comments or formatting only if a round-trip-preserving parser is added.
+Updates should be based on server article numbers, but article numbers from different groups must be stored separately. Writes to disk should use a same-directory temporary file, flush it, and atomically replace the destination. Persist only subscription markers and read ranges; article metadata and bodies must never be serialized. Preserve comments or formatting only if a round-trip-preserving parser is added.
 
 ### SessionState
 

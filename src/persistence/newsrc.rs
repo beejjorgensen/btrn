@@ -1,4 +1,10 @@
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArticleRange {
@@ -111,6 +117,44 @@ impl NewsrcState {
             output.push('\n');
         }
         output
+    }
+
+    pub fn write_atomic(&self, path: &Path) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent)?;
+        let file_name = path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "newsrc path has no file name")
+        })?;
+
+        let (temporary_path, mut file) = loop {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let mut temporary_name = file_name.to_os_string();
+            temporary_name.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+            let temporary_path = parent.join(temporary_name);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)
+            {
+                Ok(file) => break (temporary_path, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+
+        let write_result = (|| {
+            file.write_all(self.serialize().as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary_path, path)
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary_path);
+        }
+        write_result
     }
 
     pub fn entry(&self, group: &str) -> Option<&NewsrcEntry> {
@@ -245,6 +289,50 @@ fn parse_number(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_directory() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("btrn-newsrc-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn writes_only_newsrc_state_atomically_and_round_trips() {
+        let directory = temporary_directory();
+        let path = directory.join("nested/newsrc");
+        let state = NewsrcState::parse("comp.test: 1-3,8\nmisc.test! 10-\n").state;
+
+        state.write_atomic(&path).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(NewsrcState::parse(&contents).state, state);
+        assert!(!contents.contains("Subject"));
+        assert!(!contents.contains("Message-ID"));
+        assert!(!contents.contains("body"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_replacement_preserves_existing_destination_and_cleans_temporary_file() {
+        let directory = temporary_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("newsrc");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("keep"), b"existing").unwrap();
+
+        let state = NewsrcState::parse("comp.test: 1-3\n").state;
+        assert!(state.write_atomic(&destination).is_err());
+        assert_eq!(fs::read(destination.join("keep")).unwrap(), b"existing");
+        assert_eq!(
+            fs::read_dir(&directory).unwrap().count(),
+            1,
+            "temporary file should be removed after replacement failure"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn parses_subscription_markers_ranges_and_issues() {
