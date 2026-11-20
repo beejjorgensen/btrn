@@ -138,6 +138,10 @@ impl ReaderState {
         self.thread_page = self.thread_page.min(page_count.saturating_sub(1));
     }
 
+    fn should_start_on_space(&self, page_count: usize) -> bool {
+        !self.marked_threads.is_empty() || self.thread_page + 1 >= page_count
+    }
+
     fn start_reading(&mut self, state: &SessionState) -> Result<(), ReaderStateError> {
         self.reading_threads = if self.marked_threads.is_empty() {
             self.threads
@@ -299,12 +303,12 @@ pub fn run_interactive(
                 let (_, height) = terminal::size()?;
                 let pages = thread_pages(&reader_state.threads, state, height);
                 reader_state.normalize_page(pages.len());
-                if reader_state.thread_page + 1 < pages.len() {
-                    reader_state.next_page(pages.len());
-                } else {
+                if reader_state.should_start_on_space(pages.len()) {
                     reader_state
                         .start_reading(state)
                         .map_err(ReaderError::State)?;
+                } else {
+                    reader_state.next_page(pages.len());
                 }
                 redraw = true;
             }
@@ -510,12 +514,23 @@ fn render_thread_list(
         Clear(ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
+    queue!(
+        output,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reverse)
+    )?;
     write_terminal_line(
         output,
-        format_args!(
-            "{}          {} articles",
-            reader.threads.group_name, article_count
-        ),
+        format_args!("{}", reader.threads.group_name),
+        false,
+        width,
+    )?;
+    queue!(
+        output,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
+    )?;
+    write_terminal_line(
+        output,
+        format_args!("          {article_count} articles"),
         height >= 2,
         width,
     )?;
@@ -569,24 +584,32 @@ fn render_thread_list(
         );
         write_terminal_line(output, format_args!("{line}"), true, width)?;
         for author in entry.authors.iter().skip(1) {
-            write_terminal_line(output, format_args!("  {author}"), true, width)?;
+            write_terminal_line(output, format_args!("   {author}"), true, width)?;
         }
         if entry.omitted_authors > 0 {
             write_terminal_line(
                 output,
-                format_args!("  ... etc. [{} lines total]", entry.omitted_authors),
+                format_args!("   ... etc. [{} lines total]", entry.omitted_authors),
                 true,
                 width,
             )?;
         }
     }
+    queue!(
+        output,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reverse)
+    )?;
     write_terminal_line(
         output,
         format_args!(
-            "-- Select threads (date order) -- {page_position} --  < > / Space: page  q: quit"
+            "-- Select Threads (date order) -- {page_position} --  < > / Space: page  q: quit"
         ),
         false,
         width,
+    )?;
+    queue!(
+        output,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
     )?;
     output.flush()
 }
@@ -788,9 +811,13 @@ mod tests {
 
         reader.toggle_visible_thread('a', &pages[0]);
         assert!(reader.marked_threads.contains(&5));
+        assert!(reader.should_start_on_space(pages.len()));
         let mut output = Vec::new();
         render_thread_list(&mut output, &reader, &data, &pages, 80, 4).unwrap();
-        assert!(String::from_utf8(output).unwrap().contains("a+"));
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("a+"));
+        assert!(rendered.contains("\u{1b}[7mcomp.test\u{1b}[0m"));
+        assert!(rendered.contains("\u{1b}[7m-- Select Threads"));
         reader.toggle_visible_thread('a', &pages[0]);
         assert!(!reader.marked_threads.contains(&5));
         reader.toggle_visible_thread('a', &pages[0]);
@@ -812,10 +839,13 @@ mod tests {
         let data = session_with_threads(5);
         let mut reader = reader_for(&data);
         let pages = thread_pages(&reader.threads, &data, 4);
+        assert!(!reader.should_start_on_space(pages.len()));
         reader.next_page(pages.len());
         assert_eq!(reader.thread_page, 1);
+        assert!(!reader.should_start_on_space(pages.len()));
         reader.next_page(pages.len());
         assert_eq!(reader.thread_page, 2);
+        assert!(reader.should_start_on_space(pages.len()));
         reader.start_reading(&data).unwrap();
         assert_eq!(reader.reading_threads, [5, 4, 3, 2, 1]);
     }
@@ -864,6 +894,7 @@ mod tests {
         render_thread_list(&mut output, &reader, &data, &pages, 80, 5).unwrap();
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("... etc. [2 lines total]"));
+        assert!(rendered.contains("\r\n   author-reply-1\r\n"));
         assert!(!rendered.contains("author-reply-3"));
         assert!(rendered.contains("Top 50%"));
         assert_eq!(rendered.matches("\r\n").count(), 4);

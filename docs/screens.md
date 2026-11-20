@@ -87,7 +87,7 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
   fir
   ... etc. [21 lines total]
 
-[[-- Select threads (date order) -- All --]]
+[[-- Select Threads (date order) -- All --]]
 ```
 
 Each thread is assigned one letter on the current page. Only the first unread
@@ -109,12 +109,17 @@ Keys:
 * `>`: advance to the next page; do nothing on the last page
 * `<`: go to the previous page
 * Space:
-  * if another page exists, advance to that page, even if threads are marked;
+  * if any threads are marked, start reading them immediately in display order;
+  * if no threads are marked and another page exists, advance to that page;
   * on the last page, start reading marked threads in display order;
   * if no threads are marked, behave as though all threads in the group were
     selected and start reading them.
 
 The `<` and `>` keys mean the literal characters, not the arrow keys.
+
+The newsgroup name at the top and the entire `Select Threads` prompt line are
+rendered in inverse colors. Article rows without a letter are indented one
+space farther than the lettered thread row.
 
 ## Article View
 
