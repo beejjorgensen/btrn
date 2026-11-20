@@ -120,7 +120,7 @@ impl std::error::Error for ArticleError {}
 
 enum NetworkStream {
     Plain(TcpStream),
-    Tls(StreamOwned<ClientConnection, TcpStream>),
+    Tls(Box<StreamOwned<ClientConnection, TcpStream>>),
 }
 
 impl Read for NetworkStream {
@@ -231,7 +231,7 @@ impl NntpSession {
             tls.conn
                 .complete_io(&mut tls.sock)
                 .map_err(|_| NntpError::protocol(ProtocolError::Tls))?;
-            NetworkStream::Tls(tls)
+            NetworkStream::Tls(Box::new(tls))
         } else {
             NetworkStream::Plain(tcp)
         };
