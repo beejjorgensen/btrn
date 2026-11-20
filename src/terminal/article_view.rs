@@ -46,7 +46,7 @@ pub fn present_article(
 fn write_terminal_bytes(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     for character in String::from_utf8_lossy(bytes).chars() {
         if character.is_control() {
-            output.write_all("�".as_bytes())?;
+            output.write_all("\u{fffd}".as_bytes())?;
         } else {
             let mut encoded = [0; 4];
             output.write_all(character.encode_utf8(&mut encoded).as_bytes())?;
@@ -118,7 +118,7 @@ mod tests {
         let text = String::from_utf8(output.bytes).unwrap();
         assert!(text.contains("comp.test"));
         assert!(text.contains("article 9"));
-        assert!(text.contains("hello�[31m"));
+        assert!(text.contains("hello\u{fffd}[31m"));
         assert!(text.contains("body"));
     }
 
