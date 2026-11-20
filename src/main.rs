@@ -1,4 +1,5 @@
 pub mod config;
+pub mod decoder;
 pub mod model;
 pub mod nntp;
 pub mod persistence;
@@ -189,13 +190,17 @@ fn main() {
                     lines.push(Vec::new());
                     lines.extend(body);
                     let parsed = RawArticle::parse(&lines);
+                    let decoded = decoder::decode_article(&parsed.article);
+                    for issue in &decoded.issues {
+                        eprintln!("article decoding issue: {issue}");
+                    }
                     let mut stdout = io::stdout().lock();
                     if let Err(error) = terminal::article_view::present_article(
                         &mut stdout,
                         &mut state,
                         &name,
                         article_number,
-                        &parsed.article,
+                        &decoded,
                     ) {
                         eprintln!("{error}");
                         std::process::exit(1);

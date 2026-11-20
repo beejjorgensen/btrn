@@ -1,4 +1,4 @@
-use crate::model::article::RawArticle;
+use crate::decoder::DecodedArticle;
 use crate::state::{SessionState, StateError};
 use crossterm::{
     cursor::MoveTo,
@@ -11,20 +11,22 @@ pub fn render_article_view(
     output: &mut impl Write,
     group: &str,
     article_number: u64,
-    article: &RawArticle,
+    article: &DecodedArticle,
 ) -> io::Result<()> {
     queue!(output, Clear(ClearType::All), MoveTo(0, 0))?;
     writeln!(output, "{group} - article {article_number}")?;
     for header in &article.headers {
-        write_terminal_bytes(output, &header.name)?;
+        write_terminal_bytes(output, header.name.as_bytes())?;
         output.write_all(b": ")?;
-        write_terminal_bytes(output, &header.value)?;
+        write_terminal_bytes(output, header.value.as_bytes())?;
         output.write_all(b"\r\n")?;
     }
     output.write_all(b"\r\n")?;
-    for line in &article.body {
-        write_terminal_bytes(output, line)?;
-        output.write_all(b"\r\n")?;
+    if !article.body.is_empty() {
+        for line in article.body.split('\n') {
+            write_terminal_bytes(output, line.as_bytes())?;
+            output.write_all(b"\r\n")?;
+        }
     }
     output.flush()
 }
@@ -34,7 +36,7 @@ pub fn present_article(
     state: &mut SessionState,
     group: &str,
     article_number: u64,
-    article: &RawArticle,
+    article: &DecodedArticle,
 ) -> Result<(), PresentArticleError> {
     render_article_view(output, group, article_number, article)
         .map_err(PresentArticleError::Render)?;
@@ -75,7 +77,8 @@ impl std::error::Error for PresentArticleError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::article::RawArticle;
+    use crate::decoder::{decode_article, DecodedArticle};
+    use crate::model::article::{HeaderField, RawArticle};
 
     #[derive(Default)]
     struct TestWriter {
@@ -98,14 +101,15 @@ mod tests {
         }
     }
 
-    fn sample_article() -> RawArticle {
-        RawArticle {
-            headers: vec![crate::model::article::HeaderField {
+    fn sample_article() -> DecodedArticle {
+        let raw = RawArticle {
+            headers: vec![HeaderField {
                 name: b"Subject".to_vec(),
                 value: b"hello\x1b[31m".to_vec(),
             }],
             body: vec![b"body".to_vec()],
-        }
+        };
+        decode_article(&raw)
     }
 
     #[test]

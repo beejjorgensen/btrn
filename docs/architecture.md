@@ -513,6 +513,12 @@ MIME handling is not part of the NNTP protocol module:
 * decode quoted-printable and base64;
 * normalize line endings and terminal-facing text after decoding.
 
+The initial decoder supports `text/plain`, multipart text alternatives, RFC 2047
+encoded display headers, quoted-printable and base64 transfer encodings, and
+recognized character sets. It returns typed diagnostics for malformed or
+unsupported content rather than silently treating it as successfully decoded.
+The raw article remains unchanged; callers choose how to report decoder issues.
+
 ### Failure Policy
 
 Protocol operations should report typed failures:
