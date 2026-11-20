@@ -14,7 +14,7 @@ pub fn render_article_view(
     article: &DecodedArticle,
 ) -> io::Result<()> {
     queue!(output, Clear(ClearType::All), MoveTo(0, 0))?;
-    writeln!(output, "{group} - article {article_number}")?;
+    write!(output, "{group} - article {article_number}\r\n")?;
     for header in &article.headers {
         write_terminal_bytes(output, header.name.as_bytes(), true)?;
         output.write_all(b": ")?;
@@ -126,6 +126,10 @@ mod tests {
 
         assert!(state.is_read("comp.test", 9));
         let text = String::from_utf8(output.bytes).unwrap();
+        assert!(!text
+            .as_bytes()
+            .windows(2)
+            .any(|bytes| bytes[1] == b'\n' && bytes[0] != b'\r'));
         assert!(text.contains("comp.test"));
         assert!(text.contains("article 9"));
         assert!(text.contains("hello there\u{fffd}[31m"));

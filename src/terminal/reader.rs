@@ -8,6 +8,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::style::{Attribute, SetAttribute};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
+use std::fmt;
 use std::io::{self, Write};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,26 +148,33 @@ pub fn run_interactive(
     mut reader_state: ReaderState,
 ) -> Result<(), ReaderError> {
     let mut terminal = TerminalSession::enter()?;
+    let mut redraw = true;
     loop {
-        match reader_state.screen() {
-            ReaderScreen::Threads => render_thread_list(&mut terminal.output, &reader_state)?,
-            ReaderScreen::Article => {
-                let article_number = reader_state
-                    .selected_article_number()
-                    .ok_or(ReaderError::State(ReaderStateError::NoArticleSelected))?;
-                let group = reader_state.threads.group_name.clone();
-                let article = fetch_decoded_article(session, article_number)?;
-                present_article(
-                    &mut terminal.output,
-                    state,
-                    &group,
-                    article_number,
-                    &article,
-                )
-                .map_err(ReaderError::Present)?;
-                writeln!(terminal.output, "q: threads  space: next article")?;
-                terminal.output.flush()?;
+        if redraw {
+            match reader_state.screen() {
+                ReaderScreen::Threads => render_thread_list(&mut terminal.output, &reader_state)?,
+                ReaderScreen::Article => {
+                    let article_number = reader_state
+                        .selected_article_number()
+                        .ok_or(ReaderError::State(ReaderStateError::NoArticleSelected))?;
+                    let group = reader_state.threads.group_name.clone();
+                    let article = fetch_decoded_article(session, article_number)?;
+                    present_article(
+                        &mut terminal.output,
+                        state,
+                        &group,
+                        article_number,
+                        &article,
+                    )
+                    .map_err(ReaderError::Present)?;
+                    write_terminal_line(
+                        &mut terminal.output,
+                        format_args!("q: threads  space: next article"),
+                    )?;
+                    terminal.output.flush()?;
+                }
             }
+            redraw = false;
         }
 
         let Event::Key(key) = event::read()? else {
@@ -176,30 +184,36 @@ pub fn run_interactive(
             ReaderOperation::Quit => {
                 if reader_state.screen() == ReaderScreen::Article {
                     reader_state.close_article(state);
+                    redraw = true;
                 } else {
                     break;
                 }
             }
             ReaderOperation::MoveNext => {
                 reader_state.move_next_thread();
+                redraw = true;
             }
             ReaderOperation::MovePrevious => {
                 reader_state.move_previous_thread();
+                redraw = true;
             }
             ReaderOperation::OpenSelected => {
                 reader_state
                     .open_selected_thread(state)
                     .map_err(ReaderError::State)?;
+                redraw = true;
             }
             ReaderOperation::CloseArticle => {
                 reader_state.close_article(state);
+                redraw = true;
             }
             ReaderOperation::NextArticle => {
                 if reader_state.next_article().is_none() {
                     reader_state.close_article(state);
                 }
+                redraw = true;
             }
-            ReaderOperation::Redraw => {}
+            ReaderOperation::Redraw => redraw = true,
             ReaderOperation::Ignore => {}
         }
     }
@@ -230,11 +244,13 @@ fn render_thread_list(output: &mut impl Write, state: &ReaderState) -> io::Resul
         Clear(ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    writeln!(
+    write_terminal_line(
         output,
-        "{} - {} threads",
-        state.threads.group_name,
-        state.threads.rows.len()
+        format_args!(
+            "{} - {} threads",
+            state.threads.group_name,
+            state.threads.rows.len()
+        ),
     )?;
     for (index, row) in state.threads.rows.iter().enumerate() {
         if state.threads.selected_index() == Some(index) {
@@ -245,21 +261,28 @@ fn render_thread_list(output: &mut impl Write, state: &ReaderState) -> io::Resul
         } else {
             ""
         };
-        writeln!(
+        write_terminal_line(
             output,
-            "{:>3}/{:<3} {}{} {}",
-            row.unread_count,
-            row.article_numbers.len(),
-            row.root_article_number,
-            unresolved,
-            row.subject
+            format_args!(
+                "{:>3}/{:<3} {}{} {}",
+                row.unread_count,
+                row.article_numbers.len(),
+                row.root_article_number,
+                unresolved,
+                row.subject
+            ),
         )?;
         if state.threads.selected_index() == Some(index) {
             queue!(output, SetAttribute(Attribute::Reset))?;
         }
     }
-    writeln!(output, "j/k: select  enter: open  q: quit")?;
+    write_terminal_line(output, format_args!("j/k: select  enter: open  q: quit"))?;
     output.flush()
+}
+
+fn write_terminal_line(output: &mut impl Write, arguments: fmt::Arguments<'_>) -> io::Result<()> {
+    output.write_fmt(arguments)?;
+    output.write_all(b"\r\n")
 }
 
 #[derive(Debug)]
@@ -399,5 +422,22 @@ mod tests {
             reader.threads.selected().map(|row| row.root_article_number),
             Some(10)
         );
+    }
+
+    #[test]
+    fn thread_list_uses_crlf_line_endings() {
+        let mut data = SessionState::default();
+        data.load_articles("comp.test", [loaded_article(10, "root", None)])
+            .unwrap();
+        let threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        let reader = ReaderState::new(threads);
+        let mut output = Vec::new();
+
+        render_thread_list(&mut output, &reader).unwrap();
+
+        assert!(output.windows(2).any(|bytes| bytes == b"\r\n"));
+        assert!(!output
+            .windows(2)
+            .any(|bytes| bytes[1] == b'\n' && bytes[0] != b'\r'));
     }
 }
