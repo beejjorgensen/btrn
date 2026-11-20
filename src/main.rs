@@ -16,18 +16,14 @@ use std::io;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let Some(host) = args.next() else {
-        print_usage();
-        std::process::exit(2);
-    };
-
-    let mut use_tls = true;
+    let mut host = None;
+    let mut plaintext = false;
     let mut port = None;
     let mut selected_group = None;
     let mut selected_article = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
-            "--plaintext" => use_tls = false,
+            "--plaintext" => plaintext = true,
             "--group" => {
                 if selected_group.is_some() {
                     eprintln!("--group may only be specified once");
@@ -58,9 +54,10 @@ fn main() {
                         }),
                 );
             }
+            _ if host.is_none() => host = Some(argument),
             _ if port.is_none() => {
                 port = Some(argument.parse::<u16>().unwrap_or_else(|_| {
-                    eprintln!("invalid port");
+                    eprintln!("unexpected argument: {argument}");
                     print_usage();
                     std::process::exit(2);
                 }));
@@ -73,15 +70,30 @@ fn main() {
         }
     }
 
-    let config = config::Config {
-        server: Some(host.clone()),
-        use_tls,
-        port: port.unwrap_or(if use_tls { 563 } else { 119 }),
-        ..config::Config::default()
+    let mut config = config::Config::load().unwrap_or_else(|error| {
+        eprintln!("configuration failed: {error}");
+        std::process::exit(2);
+    });
+    if let Some(host) = host {
+        config.server = Some(host);
+    }
+    if plaintext {
+        config.use_tls = false;
+        if port.is_none() && config.port == 563 {
+            config.port = 119;
+        }
+    }
+    if let Some(port) = port {
+        config.port = port;
+    }
+    let Some(host) = config.server.as_deref() else {
+        eprintln!("{}", config::ConfigError::MissingServer);
+        print_usage();
+        std::process::exit(2);
     };
 
     let mut session = match NntpSession::connect(
-        config.server.as_deref().expect("server was set"),
+        host,
         config.port,
         config.use_tls,
         config.connect_timeout,
@@ -113,6 +125,16 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Some(credentials) = config.resolve_credentials().unwrap_or_else(|error| {
+        eprintln!("credentials failed: {error}");
+        std::process::exit(1);
+    }) {
+        if let Err(error) = session.authenticate(&credentials.username, &credentials.password) {
+            eprintln!("authentication failed: {error}");
+            std::process::exit(1);
+        }
+    }
 
     if selected_article.is_some() && selected_group.is_none() {
         eprintln!("--article requires --group");
@@ -257,5 +279,8 @@ fn main() {
 }
 
 fn print_usage() {
-    eprintln!("usage: btrn <host> [port] [--plaintext] [--group <name>]");
+    eprintln!(
+        "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>]\n\
+         configure server and optional credentials in ~/.config/btrn/config.toml"
+    );
 }

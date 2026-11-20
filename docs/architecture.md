@@ -121,13 +121,19 @@ The core model should describe content and state independently of NNTP protocol 
 * `initial_overview_limit`: maximum number of newest unread article numbers to load when initially entering a group. Default: `10,000`.
 * `overview_chunk_size`: maximum range requested in one XOVER call. Default: `1,000`.
 
-Passwords should be read at connection time and should not be written to disk. Password resolution should produce either a clear authentication error or a usable password. Environment variables and command-line values, if added later, must have an explicit precedence.
+Passwords should be read at connection time and should not be written to disk. Password resolution should produce either a clear authentication error or a usable password.
 
-Example:
+The initial configuration file is `~/.config/btrn/config.toml` and accepts `server`, `port`, `use_tls`, `username`, `password`, `password_command`, `editor`, `connect_timeout`, `read_timeout`, `initial_overview_limit`, and `overview_chunk_size`. Strings use TOML basic-string syntax and `password_command` is an array of strings. The CLI host, port, and `--plaintext` option override their file values; `BTRN_EDITOR` then `EDITOR` override the file's editor. Credentials are configured only in the file in this initial version. Configure exactly one of `password` and `password_command` when `username` is set. The password command is executed directly, without a shell, only when credentials are resolved.
+
+For example:
 
 ```toml
+server = "news.eternal-september.org"
+username = "your-account-name"
 password_command = ["pass", "show", "usenet/eternal-september"]
 ```
+
+After capability discovery, configured credentials trigger authentication even if the server does not list `AUTHINFO`. `AUTHINFO USER` status `281` completes authentication without a password; `381` sends `AUTHINFO PASS`; `480` is returned as an authentication challenge. Authentication failures report status categories only and never include credential arguments or server response text.
 
 ### Group
 

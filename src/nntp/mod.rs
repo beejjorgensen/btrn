@@ -61,6 +61,33 @@ impl std::fmt::Display for NntpError {
 impl std::error::Error for NntpError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthenticationError {
+    Transport(NntpError),
+    InvalidArguments,
+    AuthenticationFailed(u16),
+    ChallengeRequired,
+    UnexpectedStatus(u16),
+}
+
+impl std::fmt::Display for AuthenticationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(error) => write!(formatter, "{error}"),
+            Self::InvalidArguments => write!(formatter, "invalid authentication arguments"),
+            Self::AuthenticationFailed(status) => {
+                write!(formatter, "NNTP authentication failed (status {status})")
+            }
+            Self::ChallengeRequired => write!(formatter, "NNTP authentication challenge required"),
+            Self::UnexpectedStatus(status) => {
+                write!(formatter, "unexpected authentication status {status}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuthenticationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArticleError {
     Transport(NntpError),
     InvalidArticleNumber,
@@ -372,6 +399,48 @@ impl NntpSession {
         self.capabilities.as_ref()
     }
 
+    pub fn authenticate(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<(), AuthenticationError> {
+        if username.is_empty()
+            || !username.is_ascii()
+            || username
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+            || password.is_empty()
+            || password.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(AuthenticationError::InvalidArguments);
+        }
+
+        let response = self
+            .execute(&format!("AUTHINFO USER {username}"), false)
+            .map_err(AuthenticationError::Transport)?;
+        match response.status {
+            281 => return Ok(()),
+            381 => {}
+            480 => return Err(AuthenticationError::ChallengeRequired),
+            481 | 482 | 502 | 503 => {
+                return Err(AuthenticationError::AuthenticationFailed(response.status))
+            }
+            status => return Err(AuthenticationError::UnexpectedStatus(status)),
+        }
+
+        let response = self
+            .execute(&format!("AUTHINFO PASS {password}"), false)
+            .map_err(AuthenticationError::Transport)?;
+        match response.status {
+            281 => Ok(()),
+            480 => Err(AuthenticationError::ChallengeRequired),
+            481 | 482 | 502 | 503 => {
+                Err(AuthenticationError::AuthenticationFailed(response.status))
+            }
+            status => Err(AuthenticationError::UnexpectedStatus(status)),
+        }
+    }
+
     pub fn list_active(&mut self) -> Result<NntpResponse, NntpError> {
         self.execute("LIST ACTIVE", true)
     }
@@ -625,6 +694,100 @@ mod tests {
                 .to_vec(),
             }
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn authenticates_after_user_password_challenge() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "AUTHINFO USER reader");
+            stream.write_all(b"381 password required\r\n").unwrap();
+            read_command(&mut reader, "AUTHINFO PASS secret");
+            stream
+                .write_all(b"281 authentication accepted\r\n")
+                .unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        session.authenticate("reader", "secret").unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn accepts_user_only_authentication_and_rejects_bad_credentials() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "AUTHINFO USER reader");
+            stream.write_all(b"281 already authenticated\r\n").unwrap();
+            read_command(&mut reader, "AUTHINFO USER rejected");
+            stream
+                .write_all(b"481 authentication rejected\r\n")
+                .unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        session.authenticate("reader", "unused").unwrap();
+        assert_eq!(
+            session.authenticate("rejected", "secret"),
+            Err(AuthenticationError::AuthenticationFailed(481))
+        );
+        assert!(!AuthenticationError::AuthenticationFailed(481)
+            .to_string()
+            .contains("secret"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_bad_password_and_reports_authentication_challenges() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "AUTHINFO USER reader");
+            stream.write_all(b"381 password required\r\n").unwrap();
+            read_command(&mut reader, "AUTHINFO PASS bad");
+            stream.write_all(b"481 password rejected\r\n").unwrap();
+            read_command(&mut reader, "AUTHINFO USER challenged");
+            stream
+                .write_all(b"480 authentication required\r\n")
+                .unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.authenticate("reader", "bad"),
+            Err(AuthenticationError::AuthenticationFailed(481))
+        );
+        assert_eq!(
+            session.authenticate("challenged", "secret"),
+            Err(AuthenticationError::ChallengeRequired)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_authentication_arguments_that_could_inject_commands() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut byte = [0];
+            assert_eq!(stream.read(&mut byte).unwrap(), 0);
+        });
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.authenticate("reader\r\nNOOP", "secret"),
+            Err(AuthenticationError::InvalidArguments)
+        );
+        assert_eq!(
+            session.authenticate("reader", "secret\r\nNOOP"),
+            Err(AuthenticationError::InvalidArguments)
+        );
+        assert_eq!(
+            session.authenticate("reader", "secret\tvalue"),
+            Err(AuthenticationError::InvalidArguments)
+        );
+        drop(session);
         server.join().unwrap();
     }
 
