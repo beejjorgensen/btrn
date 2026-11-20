@@ -172,7 +172,7 @@ The model should preserve raw article data long enough to support decoding and d
 * `unread_count`: number of unread articles.
 * `newest_date`: newest known article date.
 
-Article relationships should be built from `Message-ID`, `References`, and optionally `In-Reply-To`. Subject lines must not create parent-child relationships. Missing, duplicate, cyclic, orphaned, and malformed references require a deterministic fallback; an article with no valid relationship becomes a thread root.
+Article relationships should be built from `Message-ID`, `References`, and optionally `In-Reply-To`. Use the last valid `References` ID as the parent candidate, falling back to `In-Reply-To` only when `References` is empty. Subject lines must not create parent-child relationships. Missing, duplicate, cyclic, orphaned, and malformed references require a deterministic fallback; an article with no valid relationship becomes a thread root. Resolve duplicate Message-IDs to the article with the lowest server article number and report the duplicate. Break cycles by removing the parent edge from the highest article number in the cycle. Unresolved parent IDs remain attached to root nodes as diagnostics.
 
 If an article has a reference to a parent `Message-ID` that is not present in the currently loaded overview range, the parent relationship should remain unknown rather than being invented from subject or article position. In the thread hierarchy view, display the article with a literal `(?)` marker to indicate that its parent was not loaded or could not be resolved. The marker should not replace the article's normal read/unread and subject numbering.
 
