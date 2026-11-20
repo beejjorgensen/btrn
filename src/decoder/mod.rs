@@ -63,13 +63,13 @@ pub fn decode_article(article: &RawArticle) -> DecodedArticle {
     let headers = article
         .headers
         .iter()
-        .map(|header| DecodedHeader {
-            name: String::from_utf8_lossy(&header.name).into_owned(),
-            value: if is_mime_control_header(&header.name) {
-                decode_utf8(&header.value)
-            } else {
-                decode_encoded_words(&header.name, &header.value, &mut issues)
-            },
+        .map(|header| {
+            let (value, mut header_issues) = decode_header_value(&header.name, &header.value);
+            issues.append(&mut header_issues);
+            DecodedHeader {
+                name: String::from_utf8_lossy(&header.name).into_owned(),
+                value,
+            }
         })
         .collect();
     let body_bytes = join_lines(&article.body);
@@ -79,6 +79,16 @@ pub fn decode_article(article: &RawArticle) -> DecodedArticle {
         body,
         issues,
     }
+}
+
+pub fn decode_header_value(name: &[u8], value: &[u8]) -> (String, Vec<DecodeIssue>) {
+    let mut issues = Vec::new();
+    let decoded = if is_mime_control_header(name) {
+        decode_utf8(value)
+    } else {
+        decode_encoded_words(name, value, &mut issues)
+    };
+    (decoded, issues)
 }
 
 fn decode_entity(

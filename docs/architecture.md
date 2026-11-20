@@ -192,6 +192,15 @@ The hierarchy should support:
 * marking articles read;
 * updating an existing thread when newly loaded articles arrive.
 
+The headless thread-list view model is derived from one loaded group and its
+newsrc read ranges. It provides one row per thread with a decoded display
+subject, article numbers, unread count, newest parsed date, and unresolved-parent
+diagnostic. Rows are ordered by newest date first, then newest server article
+number and root article number for deterministic fallback. Selection starts at
+the first unread thread (or the first row when all are read), supports explicit
+index selection, and clamps next/previous movement at the list boundaries.
+This view model does not perform terminal rendering or network I/O.
+
 ### NewsrcState
 
 `NewsrcState` is the persistent cross-session state for subscription and read-article information.

@@ -1,3 +1,5 @@
+pub mod thread_list;
+
 use crate::model::article::{ArticleMetadata, ArticleMetadataIssue, MessageId};
 use crate::nntp::overview::{OverviewArticle, OverviewRows};
 use crate::persistence::newsrc::{normalize_ranges, ArticleRange, NewsrcEntry, NewsrcState};
@@ -26,6 +28,7 @@ pub struct SessionState {
 pub enum StateError {
     InvalidGroupName,
     InvalidArticleNumber,
+    GroupNotLoaded,
 }
 
 impl std::fmt::Display for StateError {
@@ -33,6 +36,7 @@ impl std::fmt::Display for StateError {
         match self {
             Self::InvalidGroupName => write!(formatter, "invalid newsgroup name"),
             Self::InvalidArticleNumber => write!(formatter, "invalid article number"),
+            Self::GroupNotLoaded => write!(formatter, "newsgroup metadata has not been loaded"),
         }
     }
 }
