@@ -3,12 +3,16 @@ pub mod model;
 pub mod nntp;
 pub mod persistence;
 pub mod state;
+pub mod terminal;
 pub mod thread;
 
+use model::article::RawArticle;
 use nntp::active::parse_active_groups;
 use nntp::NntpSession;
 use persistence::newsrc::{plan_unread_chunks, NewsrcState};
+use state::SessionState;
 use std::fs;
+use std::io;
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -20,6 +24,7 @@ fn main() {
     let mut use_tls = true;
     let mut port = None;
     let mut selected_group = None;
+    let mut selected_article = None;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--plaintext" => use_tls = false,
@@ -35,6 +40,23 @@ fn main() {
                     print_usage();
                     std::process::exit(2);
                 }
+            }
+            "--article" => {
+                if selected_article.is_some() {
+                    eprintln!("--article may only be specified once");
+                    print_usage();
+                    std::process::exit(2);
+                }
+                selected_article = Some(
+                    args.next()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .filter(|number| *number > 0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--article requires a positive article number");
+                            print_usage();
+                            std::process::exit(2);
+                        }),
+                );
             }
             _ if port.is_none() => {
                 port = Some(argument.parse::<u16>().unwrap_or_else(|_| {
@@ -92,6 +114,12 @@ fn main() {
         }
     };
 
+    if selected_article.is_some() && selected_group.is_none() {
+        eprintln!("--article requires --group");
+        print_usage();
+        std::process::exit(2);
+    }
+
     if let Some(name) = selected_group {
         match session.select_group(&name) {
             Ok(group) => {
@@ -116,8 +144,49 @@ fn main() {
                 for issue in &newsrc.issues {
                     eprintln!("newsrc line {}: {}", issue.line_number, issue.message);
                 }
-                let read_ranges = newsrc
-                    .state
+                let mut state = SessionState {
+                    newsrc: newsrc.state,
+                    ..SessionState::default()
+                };
+                if let Some(article_number) = selected_article {
+                    let headers = match session.article_headers(article_number) {
+                        Ok(headers) => headers,
+                        Err(error) => {
+                            eprintln!("HEAD {article_number} failed: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let body = match session.article_body(article_number) {
+                        Ok(body) => body,
+                        Err(error) => {
+                            eprintln!("BODY {article_number} failed: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut lines = headers;
+                    lines.push(Vec::new());
+                    lines.extend(body);
+                    let parsed = RawArticle::parse(&lines);
+                    let mut stdout = io::stdout().lock();
+                    if let Err(error) = terminal::article_view::present_article(
+                        &mut stdout,
+                        &mut state,
+                        &name,
+                        article_number,
+                        &parsed.article,
+                    ) {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                    drop(stdout);
+                    if let Err(error) = state.newsrc.write_atomic(&config.newsrc_path) {
+                        eprintln!("could not write {}: {error}", config.newsrc_path.display());
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+                let read_ranges = state
+                    .newsrc
                     .entry(&name)
                     .map_or(&[][..], |entry| entry.read_ranges.as_slice());
                 let ranges = plan_unread_chunks(

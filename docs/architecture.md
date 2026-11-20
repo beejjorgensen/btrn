@@ -236,6 +236,8 @@ Read state is derived from `NewsrcState.read_ranges` and the current server numb
 
 An article is marked read only after it has been selected and presented in article view, or by an explicit mark-read operation. This timing should be deterministic and testable.
 
+The initial command-line article view accepts `--group <name> --article <number>`. It retrieves headers and body, renders the article, and marks it read only after the terminal output has been flushed successfully. The updated newsrc is then saved atomically.
+
 ### Pagination State
 
 Pagination is derived layout data, not article or thread state. It should contain:

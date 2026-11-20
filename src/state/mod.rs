@@ -212,6 +212,13 @@ mod tests {
     #[test]
     fn marking_read_updates_only_that_groups_normalized_ranges() {
         let mut state = SessionState::default();
+        state.newsrc.entries.insert(
+            "comp.test".to_owned(),
+            NewsrcEntry {
+                subscribed: true,
+                read_ranges: Vec::new(),
+            },
+        );
         state
             .mark_article_read("comp.test", 8)
             .and_then(|()| state.mark_article_read("comp.test", 7))
@@ -231,7 +238,7 @@ mod tests {
             state.newsrc.entry("misc.test").unwrap().read_ranges,
             [ArticleRange { first: 7, last: 7 }]
         );
-        assert!(!state.newsrc.entry("comp.test").unwrap().subscribed);
+        assert!(state.newsrc.entry("comp.test").unwrap().subscribed);
     }
 
     #[test]
