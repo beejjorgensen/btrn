@@ -351,12 +351,20 @@ mod tests {
         assert_eq!(decoded.headers[0].value, "caf\u{e9}");
         assert_eq!(decoded.body, "hello");
         let mut rendered = Vec::new();
+        let context = crate::terminal::article_view::ArticleViewContext {
+            group: "comp.test",
+            article_number: target,
+            more_unread: 0,
+            group_last_article: selection.last_article,
+        };
+        let layout = crate::terminal::article_view::ArticleLayout::new(&context, &decoded, 80);
         crate::terminal::article_view::present_article(
             &mut rendered,
             &mut state,
-            "comp.test",
-            target,
-            &decoded,
+            &context,
+            &layout,
+            80,
+            layout.full_height(),
         )
         .unwrap();
         assert!(state.is_read("comp.test", target));

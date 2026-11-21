@@ -242,7 +242,8 @@ fn main() {
                             std::process::exit(1);
                         }
                     };
-                    let reader = terminal::reader::ReaderState::new(loaded.threads);
+                    let reader =
+                        terminal::reader::ReaderState::new(loaded.threads, group.last_article);
                     let reader_result =
                         terminal::reader::run_interactive(&mut session, &mut state, reader);
                     let save_result = state.newsrc.write_atomic(&config.newsrc_path);
@@ -318,13 +319,32 @@ fn main() {
                     for issue in &decoded.issues {
                         eprintln!("article decoding issue: {issue}");
                     }
+                    let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+                    let more_unread = state.groups.get(&name).map_or(0, |group_state| {
+                        group_state
+                            .articles
+                            .keys()
+                            .filter(|number| {
+                                **number != article_number && !state.is_read(&name, **number)
+                            })
+                            .count()
+                    });
+                    let context = terminal::article_view::ArticleViewContext {
+                        group: &name,
+                        article_number,
+                        more_unread,
+                        group_last_article: group.last_article,
+                    };
+                    let layout =
+                        terminal::article_view::ArticleLayout::new(&context, &decoded, width);
                     let mut stdout = io::stdout().lock();
                     if let Err(error) = terminal::article_view::present_article(
                         &mut stdout,
                         &mut state,
-                        &name,
-                        article_number,
-                        &decoded,
+                        &context,
+                        &layout,
+                        width,
+                        layout.full_height(),
                     ) {
                         eprintln!("{error}");
                         std::process::exit(1);
@@ -490,7 +510,7 @@ fn main() {
                         loaded.out_of_range_rows
                     );
                 }
-                let reader = terminal::reader::ReaderState::new(loaded.threads);
+                let reader = terminal::reader::ReaderState::new(loaded.threads, group.last_article);
                 let reader_exit = match terminal::reader::run_interactive_in_session(
                     &mut session,
                     &mut state,

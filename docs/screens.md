@@ -238,10 +238,44 @@ It looks good to me.
 End of art 330019 (of 330052) [npq]
 ```
 
+The top line shows the group, the server article number, and `(N more)`, the
+count of other unread articles in the loaded group; `(N more)` is omitted when
+N is zero.
+
+The header area shows only `From`, `Subject`, `Date`, and `Lines`, in that
+order, when present. `Lines` falls back to the decoded body's line count when
+the header is missing. `Date` is currently shown as the decoded header value
+without reformatting. The `[1]` subject index and the upper-right hierarchy
+area are not yet rendered (see Thread Hierarchy).
+
+The top line, headers, one blank line, and body form one continuous display
+that is paged as a whole, with the prompt on the line below it. Each Space
+scrolls the display up by the number of new rows it reveals, at most one
+screenful, so the top line and headers scroll away after the first page. The
+last page shows the final screenful of rows, repeating rows already seen when
+the remainder is short, so the end-of-article prompt is on the bottom line of
+the screen. An article that fits on one screen shows its prompt directly after
+its content.
+Header rows are truncated to the terminal width. In the body, tabs expand to
+8-column stops, control characters are shown as U+FFFD, and long lines wrap at
+the terminal width. While more remains, the inverse prompt is
+`--MORE--(NN%)`, where NN is the percentage of the display's rows shown
+through the current page. On the last page the prompt is
+`End of art N (of M) [npq]`, where M is the group's highest article number
+from `GROUP`.
+
+The article is marked read after its first page is presented. Paging, `r`, and
+terminal resizes re-render the in-memory article at the new size without
+fetching it again or changing read state.
+
 Keys:
 
-* `q`: return to the thread selector
-* Space: show the next article in the thread
+* Space: show the next page; on the last page, show the next unread article in
+  the reading run, returning to the thread selector after the last one
+* `n`: skip to the next unread article
+* `p`: go back to the previous unread article in the current thread
+* `q`, Backspace, or `Esc`: return to the thread selector
+* `r`: redraw
 
 ## Thread Hierarchy — Planned
 
