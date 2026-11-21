@@ -38,6 +38,11 @@ impl ArticleNavigation {
         &self.group_name
     }
 
+    /// The thread root; navigation always starts its walk there.
+    pub fn root_article_number(&self) -> Option<u64> {
+        self.article_numbers.first().copied()
+    }
+
     pub fn article_numbers(&self) -> &[u64] {
         &self.article_numbers
     }

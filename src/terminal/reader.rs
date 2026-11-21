@@ -1,6 +1,7 @@
 use crate::decoder;
 use crate::nntp::{ArticleError, NntpSession};
 use crate::state::article_navigation::ArticleNavigation;
+use crate::state::thread_hierarchy::build_hierarchy;
 use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
 use crate::terminal::article_view::{
@@ -79,6 +80,9 @@ pub struct ReaderState {
     group_last_article: u64,
     article_page: usize,
     current_article: Option<CurrentArticle>,
+    /// The article viewed before the current one, highlighted in the thread
+    /// window.
+    previous_article: Option<u64>,
 }
 
 /// The decoded article on screen, kept in memory only so paging and redraws do
@@ -119,6 +123,7 @@ impl ReaderState {
             group_last_article,
             article_page: 0,
             current_article: None,
+            previous_article: None,
         }
     }
 
@@ -279,11 +284,33 @@ impl ReaderState {
             more_unread: self.more_unread(state, article_number),
             group_last_article: self.group_last_article,
         };
-        let layout = ArticleLayout::new(&context, article, width);
+        let hierarchy = self
+            .article_navigation
+            .as_ref()
+            .and_then(ArticleNavigation::root_article_number)
+            .and_then(|root| {
+                build_hierarchy(
+                    state,
+                    &self.threads.group_name,
+                    root,
+                    article_number,
+                    self.previous_article,
+                )
+                .ok()
+            });
+        let layout = match &hierarchy {
+            Some(hierarchy) => ArticleLayout::with_hierarchy(&context, article, hierarchy, width),
+            None => ArticleLayout::new(&context, article, width),
+        };
         Some((context, layout))
     }
 
     fn set_current_article(&mut self, article_number: u64, article: decoder::DecodedArticle) {
+        if let Some(current) = &self.current_article {
+            if current.article_number != article_number {
+                self.previous_article = Some(current.article_number);
+            }
+        }
         self.current_article = Some(CurrentArticle {
             article_number,
             article,
@@ -305,6 +332,7 @@ impl ReaderState {
     pub fn close_article(&mut self, state: &SessionState) {
         self.article_navigation = None;
         self.current_article = None;
+        self.previous_article = None;
         self.article_page = 0;
         self.reading_threads.clear();
         self.reading_thread_index = 0;
@@ -1029,6 +1057,32 @@ mod tests {
         assert_eq!(reader.cached_article(11), None);
         reader.set_current_article(11, decoded_body("x"));
         assert_eq!(reader.article_page, 0);
+    }
+
+    #[test]
+    fn article_view_shows_the_thread_window_with_current_and_previous_articles() {
+        let data = thread_session();
+        let mut reader = reader_for(&data);
+        reader.marked_threads.insert(10);
+        reader.start_reading(&data).unwrap();
+        reader.set_current_article(10, decoded_body("a"));
+        assert_eq!(reader.previous_article, None);
+        reader.advance_article(&data).unwrap();
+        reader.set_current_article(11, decoded_body("b"));
+        assert_eq!(reader.previous_article, Some(10));
+        // Redrawing the same article keeps the previous article.
+        reader.set_current_article(11, decoded_body("b"));
+        assert_eq!(reader.previous_article, Some(10));
+
+        // Each fixture article has its own subject, so they number 1, 2, 3.
+        let (context, layout) = reader.article_view(&data, 11, 80).unwrap();
+        let mut output = Vec::new();
+        render_article_page(&mut output, &context, &layout, 0, 80, 24).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("(\u{1b}[7m1\u{1b}[0m)--\u{1b}[7m[2]\u{1b}[0m--(3)"));
+
+        reader.close_article(&data);
+        assert_eq!(reader.previous_article, None);
     }
 
     #[test]

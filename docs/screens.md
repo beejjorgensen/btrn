@@ -204,7 +204,7 @@ and NNTP commands are being issued:
 
 We shouldn't leave the alternate screen for this.
 
-## Article View — In progress
+## Article View — Implemented
 
 The article view has four areas:
 
@@ -245,8 +245,8 @@ N is zero.
 The header area shows only `From`, `Subject`, `Date`, and `Lines`, in that
 order, when present. `Lines` falls back to the decoded body's line count when
 the header is missing. `Date` is currently shown as the decoded header value
-without reformatting. The `[1]` subject index and the upper-right hierarchy
-area are not yet rendered (see Thread Hierarchy).
+without reformatting. The Subject header is shown as `[N] subject`, where `N`
+is the subject's number in the thread hierarchy.
 
 The top line, headers, one blank line, and body form one continuous display
 that is paged as a whole, with the prompt on the line below it. Each Space
@@ -256,7 +256,16 @@ last page shows the final screenful of rows, repeating rows already seen when
 the remainder is short, so the end-of-article prompt is on the bottom line of
 the screen. An article that fits on one screen shows its prompt directly after
 its content.
-Header rows are truncated to the terminal width. In the body, tabs expand to
+The thread hierarchy window occupies the rightmost 25 columns of the first 6
+display rows and scrolls away with the headers. The top line and headers in
+those rows are limited to the terminal width minus 26 columns (one column of
+gap). A line that would run into the window wraps, and the rest continues on
+the next row prefixed with `+   ` in the leftmost column. Wrapped rows push the
+following headers and body down, and a continuation below the window rows uses
+the full width. If the headers take fewer than 6 rows, blank rows pad the
+window area before the body. Terminals narrower than 46 columns omit the
+window and use the layout below.
+Other header rows are truncated to the terminal width. In the body, tabs expand to
 8-column stops, control characters are shown as U+FFFD, and long lines wrap at
 the terminal width. While more remains, the inverse prompt is
 `--MORE--(NN%)`, where NN is the percentage of the display's rows shown
@@ -276,8 +285,10 @@ Keys:
 * `p`: go back to the previous unread article in the current thread
 * `q`, Backspace, or `Esc`: return to the thread selector
 * `r`: redraw
+* `F`: Post a follow-up article to this one, quoting the original text.
+  See the `posting.md` document.
 
-## Thread Hierarchy — Planned
+## Thread Hierarchy — Implemented
 
 An example full render:
 
@@ -298,8 +309,22 @@ Read articles use square brackets and unread articles use parentheses. The
 currently viewed article is entirely inverse, including its brackets or
 parentheses. The previously viewed article has only its number inverted.
 
+A node's first reply continues on its row joined by `--`, or by `+-` when it
+has more replies. Each later reply starts on a new row below the previous
+reply's subtree, joined by `|-`, or by `\-` for the last one, with `|`
+continuing down between them. Subjects are compared after stripping leading
+`Re:` prefixes. An article without a subject uses its parent's number. The
+current article is drawn as read, because presenting it marks it read.
+
+In the article view the hierarchy is shown through a 25-column by 6-row
+window. The window centers the current article (horizontally on its cell,
+vertically on the third row) when possible. Near the edges of the graph it
+stops at the graph's extent, and the highlight moves toward that edge of the
+window. A graph smaller than the window is anchored at its top-left.
+
 If an article refers to a parent missing from the loaded overview metadata,
-append `(?)` beside that article in the hierarchy. This is an unresolved-parent
+draw `(?)--` beside that article in the hierarchy (to the left of the thread
+root, since only roots have unresolved parents). This is an unresolved-parent
 marker, not a subject or article-number placeholder. When parent metadata is
 loaded, update the hierarchy and remove `(?)`; if it remains unavailable,
 retain the marker.

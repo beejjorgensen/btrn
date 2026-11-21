@@ -1,5 +1,6 @@
 pub mod article_navigation;
 pub mod group_selector;
+pub mod thread_hierarchy;
 pub mod thread_list;
 
 use crate::model::article::{ArticleMetadata, ArticleMetadataIssue, MessageId};
