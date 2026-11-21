@@ -104,7 +104,7 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
 
 For the username column in the thread selector, just list their name, not an email.
 
-The thread article count should be at column 23-25 (inclusive, 1-based.)
+The thread article count should be at column 23-25 (inclusive, 1-based), right justified.
 
 * If the username would encroach on this, truncate the username with elipses leaving a space before the thread article count.
 * If the thread article count is over 999, list 999 for the count.
