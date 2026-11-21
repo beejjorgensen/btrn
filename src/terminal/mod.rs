@@ -2,4 +2,4 @@ pub mod article_view;
 pub mod group_selector;
 pub mod reader;
 mod selector;
-mod session;
+pub(crate) mod session;

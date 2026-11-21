@@ -415,26 +415,46 @@ fn main() {
             newsrc: newsrc.state,
             ..SessionState::default()
         };
+        let mut terminal_session = match terminal::session::TerminalSession::enter() {
+            Ok(terminal_session) => terminal_session,
+            Err(error) => {
+                eprintln!("could not initialize terminal: {error}");
+                std::process::exit(1);
+            }
+        };
         loop {
-            let selected_groups =
-                match terminal::group_selector::run_interactive(&groups, &state.newsrc) {
-                    Ok(Some(selected_groups)) => selected_groups,
-                    Ok(None) => return,
-                    Err(error) => {
-                        eprintln!("newsgroup selector failed: {error}");
-                        std::process::exit(1);
-                    }
-                };
+            let selected_groups = match terminal::group_selector::run_interactive_in_session(
+                &groups,
+                &state.newsrc,
+                &mut terminal_session,
+            ) {
+                Ok(Some(selected_groups)) => selected_groups,
+                Ok(None) => return,
+                Err(error) => {
+                    drop(terminal_session);
+                    eprintln!("newsgroup selector failed: {error}");
+                    std::process::exit(1);
+                }
+            };
             let mut quit_application = false;
             for name in selected_groups {
+                if let Err(error) = terminal::group_selector::render_loading_threads(
+                    &mut terminal_session.output,
+                    0,
+                ) {
+                    drop(terminal_session);
+                    eprintln!("could not render loading screen: {error}");
+                    std::process::exit(1);
+                }
                 let group = match session.select_group(&name) {
                     Ok(group) => group,
                     Err(error) => {
+                        drop(terminal_session);
                         eprintln!("GROUP {name} failed: {error}");
                         std::process::exit(1);
                     }
                 };
-                let loaded = match group_overview::load_group_threads(
+                let loaded = match group_overview::load_group_threads_with_progress(
                     &mut session,
                     &mut state,
                     &name,
@@ -442,9 +462,21 @@ fn main() {
                     group.last_article,
                     config.initial_overview_limit,
                     config.overview_chunk_size,
+                    |completed, total| {
+                        let percent = if total == 0 {
+                            100
+                        } else {
+                            completed.saturating_mul(100).div_ceil(total)
+                        };
+                        terminal::group_selector::render_loading_threads(
+                            &mut terminal_session.output,
+                            percent,
+                        )
+                    },
                 ) {
                     Ok(loaded) => loaded,
                     Err(error) => {
+                        drop(terminal_session);
                         eprintln!("overview for {name} failed: {error}");
                         std::process::exit(1);
                     }
@@ -459,15 +491,21 @@ fn main() {
                     );
                 }
                 let reader = terminal::reader::ReaderState::new(loaded.threads);
-                let reader_exit =
-                    match terminal::reader::run_interactive(&mut session, &mut state, reader) {
-                        Ok(reader_exit) => reader_exit,
-                        Err(error) => {
-                            eprintln!("interactive reader failed: {error}");
-                            std::process::exit(1);
-                        }
-                    };
+                let reader_exit = match terminal::reader::run_interactive_in_session(
+                    &mut session,
+                    &mut state,
+                    reader,
+                    &mut terminal_session,
+                ) {
+                    Ok(reader_exit) => reader_exit,
+                    Err(error) => {
+                        drop(terminal_session);
+                        eprintln!("interactive reader failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
                 if let Err(error) = state.newsrc.write_atomic(&config.newsrc_path) {
+                    drop(terminal_session);
                     eprintln!("could not write {}: {error}", config.newsrc_path.display());
                     std::process::exit(1);
                 }

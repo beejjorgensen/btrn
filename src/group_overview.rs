@@ -3,6 +3,7 @@ use crate::persistence::newsrc::plan_unread_chunks;
 use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
+use std::io;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedGroupThreads {
@@ -11,10 +12,11 @@ pub struct LoadedGroupThreads {
     pub out_of_range_rows: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum GroupOverviewError {
     Overview(OverviewError),
     State(StateError),
+    Progress(io::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +50,9 @@ impl std::fmt::Display for GroupOverviewError {
         match self {
             Self::Overview(error) => write!(formatter, "{error}"),
             Self::State(error) => write!(formatter, "{error}"),
+            Self::Progress(error) => {
+                write!(formatter, "could not render loading progress: {error}")
+            }
         }
     }
 }
@@ -63,6 +68,28 @@ pub fn load_group_threads(
     initial_overview_limit: usize,
     overview_chunk_size: usize,
 ) -> Result<LoadedGroupThreads, GroupOverviewError> {
+    load_group_threads_with_progress(
+        session,
+        state,
+        group,
+        first_article,
+        last_article,
+        initial_overview_limit,
+        overview_chunk_size,
+        |_, _| Ok(()),
+    )
+}
+
+pub fn load_group_threads_with_progress(
+    session: &mut NntpSession,
+    state: &mut SessionState,
+    group: &str,
+    first_article: u64,
+    last_article: u64,
+    initial_overview_limit: usize,
+    overview_chunk_size: usize,
+    mut on_progress: impl FnMut(usize, usize) -> io::Result<()>,
+) -> Result<LoadedGroupThreads, GroupOverviewError> {
     let read_ranges = state
         .newsrc
         .entry(group)
@@ -74,9 +101,11 @@ pub fn load_group_threads(
         initial_overview_limit,
         overview_chunk_size,
     );
+    let total_chunks = ranges.len();
+    on_progress(0, total_chunks).map_err(GroupOverviewError::Progress)?;
     let mut invalid_rows = 0;
     let mut out_of_range_rows = 0;
-    for range in ranges {
+    for (completed_chunks, range) in ranges.into_iter().enumerate() {
         let rows = session
             .list_overview(range)
             .map_err(GroupOverviewError::Overview)?;
@@ -85,6 +114,7 @@ pub fn load_group_threads(
         state
             .load_overview(group, rows)
             .map_err(GroupOverviewError::State)?;
+        on_progress(completed_chunks + 1, total_chunks).map_err(GroupOverviewError::Progress)?;
     }
     if !state.groups.contains_key(group) {
         state
@@ -274,7 +304,8 @@ mod tests {
             },
         );
 
-        let loaded = load_group_threads(
+        let mut progress = Vec::new();
+        let loaded = load_group_threads_with_progress(
             &mut nntp,
             &mut state,
             &selection.name,
@@ -282,8 +313,13 @@ mod tests {
             selection.last_article,
             3,
             2,
+            |completed, total| {
+                progress.push((completed, total));
+                Ok(())
+            },
         )
         .unwrap();
+        assert_eq!(progress, [(0, 2), (1, 2), (2, 2)]);
         assert_eq!(loaded.threads.rows.len(), 2);
         assert_eq!(loaded.threads.rows[0].root_article_number, 5);
         assert_eq!(loaded.threads.rows[0].subject, "orphan");
@@ -348,8 +384,23 @@ mod tests {
         .unwrap();
         nntp.discover_capabilities().unwrap();
         let mut state = SessionState::default();
-        let loaded = load_group_threads(&mut nntp, &mut state, "empty.test", 0, 0, 10, 5).unwrap();
+        let mut progress = Vec::new();
+        let loaded = load_group_threads_with_progress(
+            &mut nntp,
+            &mut state,
+            "empty.test",
+            0,
+            0,
+            10,
+            5,
+            |completed, total| {
+                progress.push((completed, total));
+                Ok(())
+            },
+        )
+        .unwrap();
         assert!(loaded.threads.rows.is_empty());
+        assert_eq!(progress, [(0, 0)]);
         assert_eq!(
             format_thread_summary(&loaded),
             "empty.test: 0 threads, 0 articles, 0 unread\n"

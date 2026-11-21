@@ -230,9 +230,18 @@ impl ReaderState {
 pub(crate) fn run_interactive(
     session: &mut NntpSession,
     state: &mut SessionState,
-    mut reader_state: ReaderState,
+    reader_state: ReaderState,
 ) -> Result<ReaderExit, ReaderError> {
     let mut terminal = TerminalSession::enter()?;
+    run_interactive_in_session(session, state, reader_state, &mut terminal)
+}
+
+pub(crate) fn run_interactive_in_session(
+    session: &mut NntpSession,
+    state: &mut SessionState,
+    mut reader_state: ReaderState,
+    terminal: &mut TerminalSession,
+) -> Result<ReaderExit, ReaderError> {
     let mut redraw = true;
     loop {
         if redraw {

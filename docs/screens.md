@@ -117,11 +117,14 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
 [[-- Select Threads (date order) -- All --]]
 ```
 
-For the username column in the thread selector, just list their name, not an email.
+For the username column in the thread selector, just list their name,
+not an email.
 
-The thread article count should be at column 23-25 (inclusive, 1-based), right justified.
+The thread article count should be at column 23-25 (inclusive, 1-based),
+right justified.
 
-* If the username would encroach on this, truncate the username with elipses leaving a space before the thread article count.
+* If the username would encroach on this, truncate the username with
+  elipses leaving a space before the thread article count.
 * If the thread article count is over 999, list 999 for the count.
 
 Each thread is assigned one letter on the current page. Only the first unread
@@ -165,6 +168,21 @@ The `<` and `>` keys mean the literal characters, not the arrow keys.
 The newsgroup name at the top and the entire `Select Threads` prompt line are
 rendered in inverse colors. Article rows without a letter are indented one
 space farther than the lettered thread row.
+
+## Newsgroup selector/Thread selector interstitial — Implemented
+
+When the user moves from the Newsgroup selector to the thread selector
+and NNTP commands are being issued:
+
+* The screen should be cleared.
+* The bottom line of the screen should say "Loading threads" and some
+  kind of percentage or progress indicator.
+  * The progress indicator should not spawn a new thread or anything
+    heavy-handed. If chunks are coming back from the news server
+    synchronously, updating the indicator between chunks would be a good
+    place to do it.
+
+We shouldn't leave the alternate screen for this.
 
 ## Article View — In progress
 

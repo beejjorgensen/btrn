@@ -173,6 +173,14 @@ pub fn run_interactive(
     newsrc: &NewsrcState,
 ) -> io::Result<Option<Vec<String>>> {
     let mut terminal = TerminalSession::enter()?;
+    run_interactive_in_session(active, newsrc, &mut terminal)
+}
+
+pub(crate) fn run_interactive_in_session(
+    active: &ActiveGroupList,
+    newsrc: &NewsrcState,
+    terminal: &mut TerminalSession,
+) -> io::Result<Option<Vec<String>>> {
     let mut screen = GroupSelectorScreen::new(GroupSelector::from_active(active, newsrc), newsrc);
     let mut redraw = true;
     loop {
@@ -227,6 +235,23 @@ pub fn run_interactive(
             _ => {}
         }
     }
+}
+
+pub(crate) fn render_loading_threads(output: &mut impl Write, percent: usize) -> io::Result<()> {
+    let (width, height) = terminal::size()?;
+    queue!(
+        output,
+        Clear(ClearType::All),
+        crossterm::cursor::MoveTo(0, height.saturating_sub(1))
+    )?;
+    selector::write_line(
+        output,
+        &format!("Loading threads {percent}%"),
+        false,
+        width,
+        false,
+    )?;
+    output.flush()
 }
 
 fn render_group_list(
