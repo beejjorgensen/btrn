@@ -21,7 +21,7 @@ used by commands are skipped. Typing an item's letter toggles its mark.
 ## Newsgroup Selector — Planned
 
 ```
-[[Newsgroups]]       8 groups
+Newsgroups       8 groups
 
 a     6 rec.bicycles.tech
 b     1 comp.programming
@@ -32,8 +32,12 @@ g    21 rec.arts.sf.written
 i    68 rec.arts.drwho
 j    16 alt.os.linux
 
-[[-- Select a newsgroup (natural order) -- All --]]
+-- Select a newsgroup (natural order) -- All --
 ```
+
+The word `Newsgroups` at the top should be in inverse text.
+
+The entire prompt line at the bottom should be in inverse text.
 
 Typing the letter beside a newsgroup marks it for reading. A `+` appears
 immediately after the letter without shifting the rest of the row. Multiple
@@ -46,10 +50,16 @@ Keys:
 
 * letter: toggle the corresponding newsgroup's mark
 * `q`: quit
+* `>`: advance to the next page; do nothing on the last page
+* `<`: go to the previous page
 * Space:
-  * if any groups are marked, begin reading those groups;
-  * otherwise, advance to the next page;
-  * if there are no more pages, begin reading all groups.
+  * if any groups are marked, start reading them immediately in display order;
+  * if no groups are marked and another page exists, advance to that page;
+  * on the last page, start reading marked groups in display order;
+  * if no groups are marked, behave as though all groups in the group were
+    selected and start reading them.
+
+The `<` and `>` keys mean the literal characters, not the arrow keys.
 
 ## Thread Selector — Implemented
 

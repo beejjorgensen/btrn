@@ -110,18 +110,17 @@ impl ReaderState {
         }
     }
 
-    fn toggle_visible_thread(&mut self, letter: char, page: &ThreadPage) {
-        let Some(index) = page.entries.iter().find_map(|entry| {
+    fn toggle_visible_thread(&mut self, letter: char, page: &ThreadPage) -> Option<(usize, bool)> {
+        let index = page.entries.iter().find_map(|entry| {
             let row = self.threads.rows.get(entry.index)?;
             (row.unread_count > 0
                 && assigned_thread_letter(page, &self.threads, entry.index) == Some(letter))
             .then_some(entry.index)
-        }) else {
-            return;
-        };
-        if let Some(row) = self.threads.rows.get(index) {
-            self.toggle_thread(row.root_article_number);
-        }
+        })?;
+        let row = self.threads.rows.get(index)?;
+        let root_article_number = row.root_article_number;
+        self.toggle_thread(root_article_number);
+        Some((index, self.marked_threads.contains(&root_article_number)))
     }
 
     fn next_page(&mut self, page_count: usize) {
@@ -282,10 +281,16 @@ pub fn run_interactive(
                 let (_, height) = terminal::size()?;
                 let pages = thread_pages(&reader_state.threads, state, height);
                 reader_state.normalize_page(pages.len());
-                if let Some(page) = pages.get(reader_state.thread_page) {
-                    reader_state.toggle_visible_thread(letter, page);
+                let updated = pages.get(reader_state.thread_page).and_then(|page| {
+                    reader_state
+                        .toggle_visible_thread(letter, page)
+                        .map(|(row_index, marked)| (page_thread_row_y(page, row_index), marked))
+                });
+                if let Some((Some(row), marked)) = updated {
+                    write_thread_mark(&mut terminal.output, row, marked)?;
+                } else if updated.is_some() {
+                    redraw = true;
                 }
-                redraw = true;
             }
             ReaderOperation::NextPage => {
                 let (_, height) = terminal::size()?;
@@ -463,6 +468,30 @@ fn assigned_thread_letter(
         }
     }
     None
+}
+
+fn page_thread_row_y(page: &ThreadPage, row_index: usize) -> Option<u16> {
+    let mut y = 1usize;
+    for entry in &page.entries {
+        if entry.index == row_index {
+            return u16::try_from(y).ok();
+        }
+        y = y
+            .checked_add(1 + entry.authors.len().saturating_sub(1))?
+            .checked_add(usize::from(entry.omitted_authors > 0))?;
+    }
+    None
+}
+
+fn write_thread_mark(output: &mut impl Write, row: u16, marked: bool) -> io::Result<()> {
+    queue!(
+        output,
+        crossterm::cursor::SavePosition,
+        crossterm::cursor::MoveTo(1, row)
+    )?;
+    output.write_all(if marked { b"+" } else { b" " })?;
+    queue!(output, crossterm::cursor::RestorePosition)?;
+    output.flush()
 }
 
 fn page_label(index: usize, count: usize, end_index: usize, total: usize) -> String {
@@ -809,7 +838,10 @@ mod tests {
         let pages = thread_pages(&reader.threads, &data, 4);
         assert_eq!(pages.len(), 3);
 
-        reader.toggle_visible_thread('a', &pages[0]);
+        assert_eq!(
+            reader.toggle_visible_thread('a', &pages[0]),
+            Some((0, true))
+        );
         assert!(reader.marked_threads.contains(&5));
         assert!(reader.should_start_on_space(pages.len()));
         let mut output = Vec::new();
@@ -818,12 +850,21 @@ mod tests {
         assert!(rendered.contains("a+"));
         assert!(rendered.contains("\u{1b}[7mcomp.test\u{1b}[0m"));
         assert!(rendered.contains("\u{1b}[7m-- Select Threads"));
-        reader.toggle_visible_thread('a', &pages[0]);
+        assert_eq!(
+            reader.toggle_visible_thread('a', &pages[0]),
+            Some((0, false))
+        );
         assert!(!reader.marked_threads.contains(&5));
-        reader.toggle_visible_thread('a', &pages[0]);
+        assert_eq!(
+            reader.toggle_visible_thread('a', &pages[0]),
+            Some((0, true))
+        );
         assert!(reader.marked_threads.contains(&5));
         reader.next_page(pages.len());
-        reader.toggle_visible_thread('b', &pages[1]);
+        assert_eq!(
+            reader.toggle_visible_thread('b', &pages[1]),
+            Some((3, true))
+        );
         assert!(reader.marked_threads.contains(&2));
         reader.next_page(pages.len());
         reader.start_reading(&data).unwrap();
@@ -865,6 +906,50 @@ mod tests {
         let large_pages = thread_pages(&reader.threads, &data, 20);
         reader.normalize_page(large_pages.len());
         assert_eq!(reader.thread_page, 0);
+    }
+
+    #[test]
+    fn incremental_mark_update_positions_cursor_and_writes_only_the_marker() {
+        let data = session_with_threads(5);
+        let reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 10);
+        assert_eq!(page_thread_row_y(&pages[0], 2), Some(3));
+
+        let mut output = Vec::new();
+        write_thread_mark(&mut output, 3, true).unwrap();
+        assert_eq!(output, b"\x1b7\x1b[4;2H+\x1b8");
+
+        output.clear();
+        write_thread_mark(&mut output, 3, false).unwrap();
+        assert_eq!(output, b"\x1b7\x1b[4;2H \x1b8");
+        assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[2J"));
+    }
+
+    #[test]
+    fn thread_row_position_accounts_for_multiline_entries() {
+        let mut data = SessionState::default();
+        data.load_articles(
+            "comp.test",
+            [
+                loaded_article(10, "root", None),
+                loaded_article(11, "reply", Some("root")),
+                loaded_article(1, "other", None),
+            ],
+        )
+        .unwrap();
+        let threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        let pages = thread_pages(&threads, &data, 6);
+
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].entries.len(), 2);
+        assert_eq!(
+            page_thread_row_y(&pages[0], pages[0].entries[0].index),
+            Some(1)
+        );
+        assert_eq!(
+            page_thread_row_y(&pages[0], pages[0].entries[1].index),
+            Some(3)
+        );
     }
 
     #[test]
