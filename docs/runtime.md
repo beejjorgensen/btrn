@@ -37,6 +37,21 @@ separate from persisted subscription state. Cursor movement clamps at either
 end, and marked group names are returned in display order. It does not perform
 network requests or terminal rendering.
 
+`--interactive` without `--group` displays the paginated newsgroup selector.
+Space advances through pages until a group is marked or the last page is
+reached; marked groups are read in display order, or all groups are read when
+Space is pressed on the last page with no marks. `q` exits from the newsgroup
+selector. `--interactive
+--group <name>` continues to open the thread selector directly.
+In a multi-group reading run, `q` on the thread list finishes the current group
+and opens the next selected group; after the selected groups are finished, the
+newsgroup selector is shown again. `Esc` ends the application. With a single
+explicit `--group`, `q` exits to the shell as before.
+The selector lists subscribed groups with a nonzero unread-article estimate
+from the active article-number range and newsrc read ranges. Both selectors
+assign letters and digits, excluding reserved `q`; the thread selector displays
+only unread articles, and article navigation skips already-read articles.
+
 The non-interactive `--group` command loads the configured newest-unread
 overview chunks into `SessionState`, builds the headless thread list, and prints
 thread summaries with unread counts. `--flat` retains the article-number and

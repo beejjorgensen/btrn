@@ -18,7 +18,7 @@ Selectors can have multiple pages. The footer indicates the current page:
 The selector assigns letters to the visible items on the current page. Letters
 used by commands are skipped. Typing an item's letter toggles its mark.
 
-## Newsgroup Selector — Planned
+## Newsgroup Selector — Implemented
 
 ```
 Newsgroups       8 groups
@@ -42,6 +42,21 @@ The entire prompt line at the bottom should be in inverse text.
 Typing the letter beside a newsgroup marks it for reading. A `+` appears
 immediately after the letter without shifting the rest of the row. Multiple
 groups can be marked before starting.
+
+Letters a-z and digits 0-9 can be used to represent newsgroups. Except that any
+letters or digits that are otherwise used to control the newsgroup selector UI
+will not be included.
+
+Newsgroups that have no unread threads should not appear in the newsgroup
+selector. (Future improvement to keep in mind: a key to toggle
+"all"/"unread-only")
+
+Only subscribed newsgroups (those in the `newsrc` file with a `:` after the
+name) should be listed in the newsgroup selector.  (Future improvement to keep
+in mind: a key to toggle "all"/"subscribed-only".)
+
+The count beside each group is the unread article-number count estimated from
+the server's active range and the group's newsrc read ranges.
 
 The list is paginated when its contents do not fit in the available terminal
 height.
@@ -114,6 +129,15 @@ article in a thread has the letter. Typing that letter marks the thread to be
 read; a `+` is added immediately after the letter without shifting the row.
 The user may mark multiple threads before starting to read.
 
+Letters a-z and digits 0-9 can be used to represent threads. Except that any
+letters or digits that are otherwise used to control the thread selector UI
+will not be included.
+
+Articles that have been read should not appear in the thread selector. Once an
+article has been read, the next time the thread selector is viewed, that article
+will not be present. (Future improvement to keep in mind: a key to toggle
+"all"/"unread".)
+
 Only threads whose complete display fits on the page are normally included.
 When a thread would overflow the remaining space, it starts on the next page.
 If a single thread is too long to fit on an otherwise empty page, it may be
@@ -124,7 +148,9 @@ omitted.
 Keys:
 
 * letter: toggle the corresponding thread's mark
-* `q`: quit the app
+* `q`: return to the newsgroup selector (or, in a multi-group reading run,
+  finish this group and continue to the next selected group)
+* `Esc`: quit the app, including from a multi-group reading run
 * `>`: advance to the next page; do nothing on the last page
 * `<`: go to the previous page
 * Space:

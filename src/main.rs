@@ -190,11 +190,6 @@ fn main() {
         print_usage();
         std::process::exit(2);
     }
-    if interactive && selected_group.is_none() {
-        eprintln!("--interactive requires --group");
-        print_usage();
-        std::process::exit(2);
-    }
     if interactive
         && (selected_article.is_some() || selected_thread_root.is_some() || flat_overview)
     {
@@ -392,14 +387,7 @@ fn main() {
     }
 
     let groups = parse_active_groups(&active.data);
-    println!("{}", groups.groups.len());
-    for group in groups.groups {
-        println!(
-            "{} {} {} {:?}",
-            group.name, group.first_article, group.last_article, group.posting_status
-        );
-    }
-    for invalid in groups.invalid_lines {
+    for invalid in &groups.invalid_lines {
         eprintln!(
             "ignoring malformed LIST ACTIVE row {}: {:?}",
             invalid.line_number, invalid.reason
@@ -411,11 +399,102 @@ fn main() {
             capabilities.invalid_lines
         );
     }
+    if interactive {
+        let newsrc = match fs::read_to_string(&config.newsrc_path) {
+            Ok(contents) => NewsrcState::parse(&contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => NewsrcState::parse(""),
+            Err(error) => {
+                eprintln!("could not read {}: {error}", config.newsrc_path.display());
+                std::process::exit(1);
+            }
+        };
+        for issue in &newsrc.issues {
+            eprintln!("newsrc line {}: {}", issue.line_number, issue.message);
+        }
+        let mut state = SessionState {
+            newsrc: newsrc.state,
+            ..SessionState::default()
+        };
+        loop {
+            let selected_groups =
+                match terminal::group_selector::run_interactive(&groups, &state.newsrc) {
+                    Ok(Some(selected_groups)) => selected_groups,
+                    Ok(None) => return,
+                    Err(error) => {
+                        eprintln!("newsgroup selector failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+            let mut quit_application = false;
+            for name in selected_groups {
+                let group = match session.select_group(&name) {
+                    Ok(group) => group,
+                    Err(error) => {
+                        eprintln!("GROUP {name} failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                let loaded = match group_overview::load_group_threads(
+                    &mut session,
+                    &mut state,
+                    &name,
+                    group.first_article,
+                    group.last_article,
+                    config.initial_overview_limit,
+                    config.overview_chunk_size,
+                ) {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        eprintln!("overview for {name} failed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                if loaded.invalid_rows > 0 {
+                    eprintln!("ignored {} malformed overview rows", loaded.invalid_rows);
+                }
+                if loaded.out_of_range_rows > 0 {
+                    eprintln!(
+                        "ignored {} overview rows outside requested ranges",
+                        loaded.out_of_range_rows
+                    );
+                }
+                let reader = terminal::reader::ReaderState::new(loaded.threads);
+                let reader_exit =
+                    match terminal::reader::run_interactive(&mut session, &mut state, reader) {
+                        Ok(reader_exit) => reader_exit,
+                        Err(error) => {
+                            eprintln!("interactive reader failed: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                if let Err(error) = state.newsrc.write_atomic(&config.newsrc_path) {
+                    eprintln!("could not write {}: {error}", config.newsrc_path.display());
+                    std::process::exit(1);
+                }
+                if reader_exit == terminal::reader::ReaderExit::QuitApplication {
+                    quit_application = true;
+                    break;
+                }
+            }
+            if quit_application {
+                return;
+            }
+        }
+    }
+
+    println!("{}", groups.groups.len());
+    for group in groups.groups {
+        println!(
+            "{} {} {} {:?}",
+            group.name, group.first_article, group.last_article, group.posting_status
+        );
+    }
 }
 
 fn print_usage() {
     eprintln!(
         "usage: btrn [host] [port] [--plaintext] [--group <name>] [--article <number>] [--thread-root <number>] [--flat] [--interactive]\n\
+         use --interactive without --group to select newsgroups interactively\n\
          configure server and optional credentials in ~/.config/btrn/config.toml"
     );
 }

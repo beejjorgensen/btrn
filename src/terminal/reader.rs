@@ -4,9 +4,11 @@ use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
 use crate::terminal::article_view::present_article;
+use crate::terminal::selector;
+use crate::terminal::session::TerminalSession;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{execute, queue};
+use crossterm::queue;
+use crossterm::terminal::{self, Clear, ClearType};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
@@ -14,6 +16,7 @@ use std::io::{self, Write};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderOperation {
     Quit,
+    FinishGroup,
     ToggleThread(char),
     NextPage,
     PreviousPage,
@@ -29,7 +32,9 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         return ReaderOperation::Ignore;
     }
     match (screen, key.code) {
-        (_, KeyCode::Char('q')) | (_, KeyCode::Esc) => ReaderOperation::Quit,
+        (_, KeyCode::Esc) => ReaderOperation::Quit,
+        (ReaderScreen::Threads, KeyCode::Char('q')) => ReaderOperation::FinishGroup,
+        (ReaderScreen::Article, KeyCode::Char('q')) => ReaderOperation::Quit,
         (ReaderScreen::Threads, KeyCode::Char('>')) => ReaderOperation::NextPage,
         (ReaderScreen::Threads, KeyCode::Char('<')) => ReaderOperation::PreviousPage,
         (ReaderScreen::Threads, KeyCode::Char(' ')) => ReaderOperation::StartSelectedThreads,
@@ -37,12 +42,18 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
         (ReaderScreen::Threads, KeyCode::Char(letter))
-            if letter.is_ascii_alphabetic() && letter != 'q' =>
+            if letter.is_ascii_alphanumeric() && letter != 'q' =>
         {
             ReaderOperation::ToggleThread(letter.to_ascii_lowercase())
         }
         _ => ReaderOperation::Ignore,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReaderExit {
+    FinishGroup,
+    QuitApplication,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +90,8 @@ impl std::fmt::Display for ReaderStateError {
 impl std::error::Error for ReaderStateError {}
 
 impl ReaderState {
-    pub fn new(threads: ThreadList) -> Self {
+    pub fn new(mut threads: ThreadList) -> Self {
+        threads.rows.retain(|row| row.unread_count > 0);
         Self {
             threads,
             article_navigation: None,
@@ -183,6 +195,10 @@ impl ReaderState {
         self.article_navigation.as_mut()?.next_article()
     }
 
+    fn next_unread_article(&mut self, state: &SessionState) -> Option<u64> {
+        self.article_navigation.as_mut()?.next_unread_article(state)
+    }
+
     fn advance_to_next_thread(&mut self, state: &SessionState) -> Result<bool, ReaderStateError> {
         if self.reading_thread_index + 1 >= self.reading_threads.len() {
             self.article_navigation = None;
@@ -198,7 +214,8 @@ impl ReaderState {
         self.article_navigation = None;
         self.reading_threads.clear();
         self.reading_thread_index = 0;
-        if let Ok(updated) = ThreadList::from_session(state, &self.threads.group_name) {
+        if let Ok(mut updated) = ThreadList::from_session(state, &self.threads.group_name) {
+            updated.rows.retain(|row| row.unread_count > 0);
             self.threads = updated;
             self.marked_threads.retain(|root| {
                 self.threads
@@ -210,11 +227,11 @@ impl ReaderState {
     }
 }
 
-pub fn run_interactive(
+pub(crate) fn run_interactive(
     session: &mut NntpSession,
     state: &mut SessionState,
     mut reader_state: ReaderState,
-) -> Result<(), ReaderError> {
+) -> Result<ReaderExit, ReaderError> {
     let mut terminal = TerminalSession::enter()?;
     let mut redraw = true;
     loop {
@@ -252,6 +269,7 @@ pub fn run_interactive(
                         format_args!("q: threads  space: next article"),
                         false,
                         terminal::size()?.0,
+                        false,
                     )?;
                     terminal.output.flush()?;
                 }
@@ -274,7 +292,15 @@ pub fn run_interactive(
                     reader_state.close_article(state);
                     redraw = true;
                 } else {
-                    break;
+                    return Ok(ReaderExit::QuitApplication);
+                }
+            }
+            ReaderOperation::FinishGroup => {
+                if reader_state.screen() == ReaderScreen::Article {
+                    reader_state.close_article(state);
+                    redraw = true;
+                } else {
+                    return Ok(ReaderExit::FinishGroup);
                 }
             }
             ReaderOperation::ToggleThread(letter) => {
@@ -287,7 +313,7 @@ pub fn run_interactive(
                         .map(|(row_index, marked)| (page_thread_row_y(page, row_index), marked))
                 });
                 if let Some((Some(row), marked)) = updated {
-                    write_thread_mark(&mut terminal.output, row, marked)?;
+                    selector::write_mark(&mut terminal.output, 1, row, marked)?;
                 } else if updated.is_some() {
                     redraw = true;
                 }
@@ -322,7 +348,7 @@ pub fn run_interactive(
                 redraw = true;
             }
             ReaderOperation::NextArticle => {
-                if reader_state.next_article().is_none()
+                if reader_state.next_unread_article(state).is_none()
                     && !reader_state
                         .advance_to_next_thread(state)
                         .map_err(ReaderError::State)?
@@ -335,7 +361,6 @@ pub fn run_interactive(
             ReaderOperation::Ignore => {}
         }
     }
-    Ok(())
 }
 
 fn fetch_decoded_article(
@@ -370,6 +395,7 @@ struct ThreadPage {
 }
 
 fn thread_pages(threads: &ThreadList, state: &SessionState, height: u16) -> Vec<ThreadPage> {
+    const MAX_PAGE_THREADS: usize = 35;
     let mut pages = Vec::new();
     let capacity = usize::from(height).saturating_sub(2);
     if capacity == 0 {
@@ -378,7 +404,10 @@ fn thread_pages(threads: &ThreadList, state: &SessionState, height: u16) -> Vec<
     let mut page = ThreadPage::default();
     let mut used = 0;
     for (index, row) in threads.rows.iter().enumerate() {
-        if page.entries.len() == 25 {
+        if row.unread_count == 0 {
+            continue;
+        }
+        if page.entries.len() == MAX_PAGE_THREADS {
             page.end_index = index;
             pages.push(page);
             page = ThreadPage::default();
@@ -437,6 +466,7 @@ fn thread_authors(row: &crate::state::thread_list::ThreadRow, state: &SessionSta
     }
     article_numbers
         .iter()
+        .filter(|number| !state.is_read(&row.group_name, **number))
         .map(|number| {
             state
                 .groups
@@ -521,10 +551,6 @@ fn thread_heading(
     )
 }
 
-fn thread_letter(index: usize) -> Option<char> {
-    "abcdefghijklmnoprstuvwxyz".chars().nth(index)
-}
-
 fn assigned_thread_letter(
     page: &ThreadPage,
     threads: &ThreadList,
@@ -534,7 +560,7 @@ fn assigned_thread_letter(
     for entry in &page.entries {
         if threads.rows.get(entry.index)?.unread_count > 0 {
             if entry.index == row_index {
-                return thread_letter(letter_index);
+                return selector::selection_letter(letter_index);
             }
             letter_index += 1;
         }
@@ -555,36 +581,6 @@ fn page_thread_row_y(page: &ThreadPage, row_index: usize) -> Option<u16> {
     None
 }
 
-fn write_thread_mark(output: &mut impl Write, row: u16, marked: bool) -> io::Result<()> {
-    queue!(
-        output,
-        crossterm::cursor::SavePosition,
-        crossterm::cursor::MoveTo(1, row)
-    )?;
-    output.write_all(if marked { b"+" } else { b" " })?;
-    queue!(output, crossterm::cursor::RestorePosition)?;
-    output.flush()
-}
-
-fn page_label(index: usize, count: usize, end_index: usize, total: usize) -> String {
-    if count <= 1 {
-        return "All".to_owned();
-    }
-    if index + 1 == count {
-        return "Bot".to_owned();
-    }
-    let percent = if total == 0 {
-        100
-    } else {
-        end_index.saturating_mul(100).div_ceil(total)
-    };
-    if index == 0 {
-        format!("Top {percent}%")
-    } else {
-        format!("{percent}%")
-    }
-}
-
 fn render_thread_list(
     output: &mut impl Write,
     reader: &ReaderState,
@@ -598,7 +594,7 @@ fn render_thread_list(
     }
     let page_index = reader.thread_page.min(pages.len().saturating_sub(1));
     let page = pages.get(page_index).cloned().unwrap_or_default();
-    let page_position = page_label(
+    let page_position = selector::page_label(
         page_index,
         pages.len(),
         page.end_index,
@@ -615,34 +611,34 @@ fn render_thread_list(
         Clear(ClearType::All),
         crossterm::cursor::MoveTo(0, 0)
     )?;
-    queue!(
-        output,
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Reverse)
-    )?;
     write_terminal_line(
         output,
         format_args!("{}", reader.threads.group_name),
         false,
         width,
-    )?;
-    queue!(
-        output,
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
+        true,
     )?;
     write_terminal_line(
         output,
         format_args!("          {article_count} articles"),
         height >= 2,
         width,
+        false,
     )?;
     if height < 3 {
         if height == 2 {
-            write_terminal_line(output, format_args!("-- {page_position} --"), false, width)?;
+            write_terminal_line(
+                output,
+                format_args!("-- {page_position} --"),
+                false,
+                width,
+                true,
+            )?;
         }
         return output.flush();
     }
     if reader.threads.rows.is_empty() {
-        write_terminal_line(output, format_args!("No threads"), true, width)?;
+        write_terminal_line(output, format_args!("No threads"), true, width, false)?;
     }
     for entry in &page.entries {
         let row = &reader.threads.rows[entry.index];
@@ -675,9 +671,9 @@ fn render_thread_list(
             .map(|subject| crate::decoder::decode_header_value(b"Subject", subject).0)
             .unwrap_or_else(|| row.subject.clone());
         let line = thread_heading(letter, marked, author, row.unread_count, &lead, unresolved);
-        write_terminal_line(output, format_args!("{line}"), true, width)?;
+        write_terminal_line(output, format_args!("{line}"), true, width, false)?;
         for author in entry.authors.iter().skip(1) {
-            write_terminal_line(output, format_args!("   {author}"), true, width)?;
+            write_terminal_line(output, format_args!("   {author}"), true, width, false)?;
         }
         if entry.omitted_authors > 0 {
             write_terminal_line(
@@ -685,13 +681,10 @@ fn render_thread_list(
                 format_args!("   ... etc. [{} lines total]", entry.omitted_authors),
                 true,
                 width,
+                false,
             )?;
         }
     }
-    queue!(
-        output,
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Reverse)
-    )?;
     write_terminal_line(
         output,
         format_args!(
@@ -699,10 +692,7 @@ fn render_thread_list(
         ),
         false,
         width,
-    )?;
-    queue!(
-        output,
-        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
+        true,
     )?;
     output.flush()
 }
@@ -712,45 +702,12 @@ fn write_terminal_line(
     arguments: fmt::Arguments<'_>,
     terminate: bool,
     width: u16,
+    inverse: bool,
 ) -> io::Result<()> {
     let mut line = String::new();
     fmt::write(&mut line, arguments)
         .map_err(|_| io::Error::other("could not format terminal line"))?;
-    output.write_all(fit_terminal_line(&line, width).as_bytes())?;
-    if terminate {
-        output.write_all(b"\r\n")?;
-    }
-    Ok(())
-}
-
-fn fit_terminal_line(line: &str, width: u16) -> String {
-    let sanitized: String = line
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                '\u{fffd}'
-            } else {
-                character
-            }
-        })
-        .collect();
-    let width = usize::from(width);
-    if sanitized.len() <= width {
-        return sanitized;
-    }
-
-    let mut fitted = String::new();
-    let prefix_limit = width.saturating_sub('…'.len_utf8());
-    for character in sanitized.chars() {
-        if fitted.len() + character.len_utf8() > prefix_limit {
-            break;
-        }
-        fitted.push(character);
-    }
-    if width > 0 {
-        fitted.push('…');
-    }
-    fitted
+    selector::write_line(output, &line, terminate, width, inverse)
 }
 
 #[derive(Debug)]
@@ -777,39 +734,6 @@ impl std::error::Error for ReaderError {}
 impl From<io::Error> for ReaderError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
-    }
-}
-
-struct TerminalSession {
-    output: io::Stdout,
-    raw_mode: bool,
-    alternate_screen: bool,
-}
-
-impl TerminalSession {
-    fn enter() -> io::Result<Self> {
-        let mut output = io::stdout();
-        execute!(output, EnterAlternateScreen)?;
-        if let Err(error) = terminal::enable_raw_mode() {
-            let _ = execute!(output, LeaveAlternateScreen);
-            return Err(error);
-        }
-        Ok(Self {
-            output,
-            raw_mode: true,
-            alternate_screen: true,
-        })
-    }
-}
-
-impl Drop for TerminalSession {
-    fn drop(&mut self) {
-        if self.raw_mode {
-            let _ = terminal::disable_raw_mode();
-        }
-        if self.alternate_screen {
-            let _ = execute!(self.output, LeaveAlternateScreen);
-        }
     }
 }
 
@@ -859,11 +783,16 @@ mod tests {
 
     #[test]
     fn thread_pager_keys_are_literal_and_screen_specific() {
-        assert_eq!(thread_letter(16), Some('r'));
-        assert_eq!(thread_letter(25), None);
+        assert_eq!(selector::selection_letter(16), Some('r'));
+        assert_eq!(selector::selection_letter(24), Some('z'));
+        assert_eq!(selector::selection_letter(25), Some('0'));
         assert_eq!(
             operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('j'))),
             ReaderOperation::ToggleThread('j')
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('0'))),
+            ReaderOperation::ToggleThread('0')
         );
         assert_eq!(
             operation_for_key(ReaderScreen::Article, key(KeyCode::Char('j'))),
@@ -883,6 +812,10 @@ mod tests {
         );
         assert_eq!(
             operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('q'))),
+            ReaderOperation::FinishGroup
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Esc)),
             ReaderOperation::Quit
         );
         assert_eq!(
@@ -980,11 +913,11 @@ mod tests {
         assert_eq!(page_thread_row_y(&pages[0], 2), Some(3));
 
         let mut output = Vec::new();
-        write_thread_mark(&mut output, 3, true).unwrap();
+        selector::write_mark(&mut output, 1, 3, true).unwrap();
         assert_eq!(output, b"\x1b7\x1b[4;2H+\x1b8");
 
         output.clear();
-        write_thread_mark(&mut output, 3, false).unwrap();
+        selector::write_mark(&mut output, 1, 3, false).unwrap();
         assert_eq!(output, b"\x1b7\x1b[4;2H \x1b8");
         assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[2J"));
     }
@@ -1067,6 +1000,50 @@ mod tests {
     }
 
     #[test]
+    fn thread_selector_hides_read_articles_and_skips_them_when_advancing() {
+        let mut data = SessionState::default();
+        data.load_articles(
+            "comp.test",
+            [
+                loaded_article(10, "root", None),
+                loaded_article(11, "read-reply", Some("root")),
+                loaded_article(12, "unread-reply", Some("read-reply")),
+            ],
+        )
+        .unwrap();
+        data.mark_article_read("comp.test", 11).unwrap();
+        let mut reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 10);
+
+        assert_eq!(
+            pages[0].entries[0].authors,
+            ["author-root", "author-unread-reply"]
+        );
+        reader.start_reading(&data).unwrap();
+        assert_eq!(reader.selected_article_number(), Some(10));
+        assert_eq!(reader.next_unread_article(&data), Some(12));
+        assert_eq!(reader.next_unread_article(&data), None);
+    }
+
+    #[test]
+    fn thread_selector_uses_digits_after_available_letters() {
+        let data = session_with_threads(36);
+        let reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 50);
+
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].entries.len(), 35);
+        assert_eq!(
+            assigned_thread_letter(&pages[0], &reader.threads, 34),
+            Some('9')
+        );
+        assert_eq!(
+            assigned_thread_letter(&pages[1], &reader.threads, 35),
+            Some('a')
+        );
+    }
+
+    #[test]
     fn thread_pages_keep_complete_entries_and_truncate_a_too_long_thread() {
         let mut data = SessionState::default();
         data.load_articles(
@@ -1145,16 +1122,17 @@ mod tests {
         render_thread_list(&mut output, &reader, &data, &pages, 80, 5).unwrap();
 
         let rendered = String::from_utf8(output).unwrap();
-        assert!(rendered.contains("   author-thread-1"));
+        assert!(!rendered.contains("author-thread-1"));
+        assert!(pages[0].entries.is_empty());
         assert_eq!(assigned_thread_letter(&pages[0], &reader.threads, 0), None);
     }
 
     #[test]
     fn terminal_line_is_sanitized_and_fitted_to_columns() {
-        assert_eq!(fit_terminal_line("ab\u{1b}cdef", 5), "ab…");
-        assert_eq!(fit_terminal_line("a\u{1b}b", 10), "a�b");
-        assert_eq!(fit_terminal_line("abcdef", 1), "…");
-        assert_eq!(fit_terminal_line("okay", 10), "okay");
+        assert_eq!(selector::fit_terminal_line("ab\u{1b}cdef", 5), "ab…");
+        assert_eq!(selector::fit_terminal_line("a\u{1b}b", 10), "a�b");
+        assert_eq!(selector::fit_terminal_line("abcdef", 1), "…");
+        assert_eq!(selector::fit_terminal_line("okay", 10), "okay");
     }
 
     #[test]

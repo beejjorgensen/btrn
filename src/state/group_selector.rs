@@ -117,7 +117,11 @@ impl GroupSelector {
     }
 
     pub fn toggle_selected(&mut self) -> Option<bool> {
-        let row = self.rows.get_mut(self.selected_index?)?;
+        self.toggle(self.selected_index?)
+    }
+
+    pub fn toggle(&mut self, index: usize) -> Option<bool> {
+        let row = self.rows.get_mut(index)?;
         row.marked = !row.marked;
         Some(row.marked)
     }
