@@ -102,6 +102,13 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
 [[-- Select Threads (date order) -- All --]]
 ```
 
+For the username column in the thread selector, just list their name, not an email.
+
+The thread article count should be at column 23-25 (inclusive, 1-based.)
+
+* If the username would encroach on this, truncate the username with elipses leaving a space before the thread article count.
+* If the thread article count is over 999, list 999 for the count.
+
 Each thread is assigned one letter on the current page. Only the first unread
 article in a thread has the letter. Typing that letter marks the thread to be
 read; a `+` is added immediately after the letter without shifting the row.

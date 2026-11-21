@@ -443,10 +443,82 @@ fn thread_authors(row: &crate::state::thread_list::ThreadRow, state: &SessionSta
                 .get(&row.group_name)
                 .and_then(|group| group.articles.get(number))
                 .and_then(|metadata| metadata.from.as_deref())
-                .map(|from| crate::decoder::decode_header_value(b"From", from).0)
+                .map(thread_author_name)
                 .unwrap_or_else(|| "(unknown author)".to_owned())
         })
         .collect()
+}
+
+fn thread_author_name(value: &[u8]) -> String {
+    let decoded = crate::decoder::decode_header_value(b"From", value).0;
+    let decoded = decoded.trim();
+    let name = if let Some(opening) = decoded.rfind('<') {
+        let display_name = decoded[..opening].trim();
+        if display_name.is_empty() {
+            email_username(decoded[opening + 1..].trim_end_matches('>').trim())
+        } else {
+            display_name
+        }
+    } else if let Some(opening) = decoded.rfind('(') {
+        let trailing = decoded[opening + 1..].trim_end_matches(')').trim();
+        if decoded[..opening].contains('@') && !trailing.is_empty() {
+            trailing
+        } else if decoded.contains('@') {
+            email_username(decoded)
+        } else {
+            decoded
+        }
+    } else if decoded.contains('@') {
+        email_username(decoded)
+    } else {
+        decoded
+    };
+    name.trim().trim_matches('"').trim().to_owned()
+}
+
+fn email_username(address: &str) -> &str {
+    address
+        .split_once('@')
+        .map_or(address, |(username, _)| username)
+        .trim()
+}
+
+fn truncate_thread_author(author: &str) -> String {
+    const AUTHOR_COLUMN_WIDTH: usize = 18;
+    let mut characters = author.chars();
+    let mut truncated = characters
+        .by_ref()
+        .take(AUTHOR_COLUMN_WIDTH)
+        .collect::<String>();
+    if characters.next().is_some() {
+        truncated.truncate(
+            truncated
+                .char_indices()
+                .nth(AUTHOR_COLUMN_WIDTH - 3)
+                .map_or(truncated.len(), |(index, _)| index),
+        );
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn thread_heading(
+    letter: char,
+    marked: bool,
+    author: &str,
+    unread_count: usize,
+    lead: &str,
+    unresolved: &str,
+) -> String {
+    format!(
+        "{}{} {:<18} {:>3}  >{}{}",
+        letter,
+        if marked && letter != ' ' { "+" } else { " " },
+        truncate_thread_author(author),
+        unread_count.min(999),
+        lead,
+        unresolved
+    )
 }
 
 fn thread_letter(index: usize) -> Option<char> {
@@ -602,15 +674,7 @@ fn render_thread_list(
             .and_then(|metadata| metadata.subject.as_deref())
             .map(|subject| crate::decoder::decode_header_value(b"Subject", subject).0)
             .unwrap_or_else(|| row.subject.clone());
-        let line = format!(
-            "{}{} {:<20} {:>3}  >{}{}",
-            letter,
-            if marked && letter != ' ' { "+" } else { " " },
-            author,
-            row.unread_count,
-            lead,
-            unresolved
-        );
+        let line = thread_heading(letter, marked, author, row.unread_count, &lead, unresolved);
         write_terminal_line(output, format_args!("{line}"), true, width)?;
         for author in entry.authors.iter().skip(1) {
             write_terminal_line(output, format_args!("   {author}"), true, width)?;
@@ -923,6 +987,56 @@ mod tests {
         write_thread_mark(&mut output, 3, false).unwrap();
         assert_eq!(output, b"\x1b7\x1b[4;2H \x1b8");
         assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[2J"));
+    }
+
+    #[test]
+    fn thread_author_names_omit_email_addresses() {
+        assert_eq!(
+            thread_author_name(b"=?UTF-8?Q?Jane_Doe?= <jane@example.com>"),
+            "Jane Doe"
+        );
+        assert_eq!(
+            thread_author_name(b"jane@example.com (Jane Doe)"),
+            "Jane Doe"
+        );
+        assert_eq!(thread_author_name(b"jane@example.com"), "jane");
+    }
+
+    #[test]
+    fn thread_heading_aligns_and_caps_the_article_count() {
+        let line = thread_heading(
+            'a',
+            false,
+            "A Very Long Author Display Name",
+            1_234,
+            "topic",
+            "",
+        );
+
+        assert_eq!(&line[22..25], "999");
+        assert!(line.starts_with("a  A Very Long Aut... 999"));
+        assert!(!line.contains(" 1234 "));
+    }
+
+    #[test]
+    fn thread_rendering_uses_author_display_name_without_email() {
+        let mut data = session_with_threads(1);
+        data.groups
+            .get_mut("comp.test")
+            .unwrap()
+            .articles
+            .get_mut(&1)
+            .unwrap()
+            .from = Some(b"Alice Example <alice@example.com>".to_vec());
+        let reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 10);
+        let mut output = Vec::new();
+
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 10).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        assert!(rendered.contains("Alice Example"));
+        assert!(!rendered.contains("alice@example.com"));
     }
 
     #[test]
