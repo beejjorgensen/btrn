@@ -21,6 +21,6 @@
     "CARGO_TERM_COLOR": "always",
     "RUST_BACKTRACE": "1"
   },
-  "postCreateCommand": "rustup component add rustfmt clippy rust-analyzer",
+  "postCreateCommand": "rustup default stable && rustup component add rustfmt clippy rust-analyzer",
   "remoteUser": "vscode"
 }
