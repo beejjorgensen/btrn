@@ -1,10 +1,12 @@
 # Screen Specification
 
+Status labels are defined in the [documentation index](./README.md).
+
 Text inside `[[double square brackets]]` is rendered in inverse colors without
 the brackets. Most keystrokes take effect immediately; pressing Return is not
 required except where noted.
 
-## Newsgroup and Thread Selector Common
+## Newsgroup and Thread Selector Common — In progress
 
 Selectors can have multiple pages. The footer indicates the current page:
 
@@ -16,7 +18,7 @@ Selectors can have multiple pages. The footer indicates the current page:
 The selector assigns letters to the visible items on the current page. Letters
 used by commands are skipped. Typing an item's letter toggles its mark.
 
-## Newsgroup Selector
+## Newsgroup Selector — Planned
 
 ```
 [[Newsgroups]]       8 groups
@@ -49,7 +51,7 @@ Keys:
   * otherwise, advance to the next page;
   * if there are no more pages, begin reading all groups.
 
-## Thread Selector
+## Thread Selector — Implemented
 
 The thread selector is shown for one newsgroup. Each visible thread has a
 letter, an unread/article count, a subject, and its article rows:
@@ -121,7 +123,7 @@ The newsgroup name at the top and the entire `Select Threads` prompt line are
 rendered in inverse colors. Article rows without a letter are indented one
 space farther than the lettered thread row.
 
-## Article View
+## Article View — In progress
 
 The article view has four areas:
 
@@ -160,7 +162,7 @@ Keys:
 * `q`: return to the thread selector
 * Space: show the next article in the thread
 
-## Thread Hierarchy
+## Thread Hierarchy — Planned
 
 An example full render:
 

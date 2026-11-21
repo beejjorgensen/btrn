@@ -2,7 +2,9 @@
 
 This is a from-scratch USENET newsreader in Rust.
 
-## General Goals
+Status labels are defined in the [documentation index](./README.md).
+
+## General Goals — In progress
 
 * Minimal reliance on 3rd-party crates.
   * NNTP client code should be from scratch.
@@ -27,11 +29,11 @@ This is a from-scratch USENET newsreader in Rust.
   * Organize code by responsibility, not by a rigid number of files or directories. A module may contain a few closely related types and functions.
   * Include focused unit tests at module boundaries and integration-style fixtures for NNTP wire responses and article decoding.
 
-## Async?
+## Async? — Planned
 
 This is an open question. We should discuss pros and cons.
 
-## Command and Feature Expansion
+## Command and Feature Expansion — In progress
 
 Key commands and interactive features will expand substantially over time. The implementation should make it easy to add commands and screen behavior without rewriting each screen or scattering key checks across rendering code.
 
@@ -49,11 +51,11 @@ Key commands and interactive features will expand substantially over time. The i
 * Grouped commands should share model operations where possible. For example, marking all threads read should use the same read-state operation as marking one thread read.
 * Screen navigation and command execution should remain testable without a real terminal or network connection.
 
-## Testing
+## Testing — In progress
 
 E2E testing should be feasible and valuable, but it should be layered so that terminal automation is used only for a small number of critical journeys.
 
-### Test Layers
+### Test Layers — In progress
 
 1. **NNTP protocol integration tests**
    * Run a small fake NNTP server in the test suite.
@@ -76,7 +78,7 @@ E2E testing should be feasible and valuable, but it should be layered so that te
    * Assert screen text and, when practical, inverse rendering state.
    * Keep this layer small because terminal dimensions and escape sequences can make tests brittle.
 
-### Critical E2E Journeys
+### Critical E2E Journeys — Planned
 
 The initial full-terminal E2E suite should cover:
 
@@ -100,11 +102,11 @@ A reasonable initial coverage balance is:
 * roughly 25% terminal state and snapshot tests;
 * roughly 15% end-to-end pseudo-terminal journeys.
 
-## Core Data Model
+## Core Data Model — In progress
 
 The core model should describe content and state independently of NNTP protocol details and terminal rendering. Protocol responses, terminal layouts, and files on disk may be translated into these types, but should not leak into the rest of the application.
 
-### Config
+### Config — In progress
 
 `Config` is the effective configuration after environment-variable and configuration-file handling.
 
@@ -135,7 +137,7 @@ password_command = ["pass", "show", "usenet/eternal-september"]
 
 After capability discovery, configured credentials trigger authentication even if the server does not list `AUTHINFO`. `AUTHINFO USER` status `281` completes authentication without a password; `381` sends `AUTHINFO PASS`; `480` is returned as an authentication challenge. Authentication failures report status categories only and never include credential arguments or server response text.
 
-### Group
+### Group — In progress
 
 `Group` represents a newsgroup known to a server.
 
@@ -148,7 +150,7 @@ After capability discovery, configured credentials trigger authentication even i
 
 The newsrc subscription status and server article-number ranges are distinct. Article numbers are server-local and may differ between servers or later change as articles expire.
 
-### Article
+### Article — In progress
 
 `Article` is the stable, application-level representation of an article.
 
@@ -168,7 +170,7 @@ A single article may have server numbers in multiple groups. It should not be id
 
 The model should preserve raw article data long enough to support decoding and diagnostics, but normal UI code should consume normalized text and structured headers.
 
-### Thread
+### Thread — In progress
 
 `Thread` represents a hierarchy of articles connected by RFC references.
 
@@ -208,7 +210,7 @@ and previous operations move across all known articles; next/previous unread
 operations skip read articles and do not wrap at either end. Navigation itself
 does not mutate read state.
 
-### NewsrcState
+### NewsrcState — Implemented
 
 `NewsrcState` is the persistent cross-session state for subscription and read-article information.
 
@@ -220,7 +222,7 @@ Newsrc parsing must distinguish a missing entry, a subscribed entry, and an unsu
 
 Updates should be based on server article numbers, but article numbers from different groups must be stored separately. Writes to disk should use a same-directory temporary file, flush it, and atomically replace the destination. Persist only subscription markers and read ranges; article metadata and bodies must never be serialized. Preserve comments or formatting only if a round-trip-preserving parser is added.
 
-### SessionState
+### SessionState — In progress
 
 `SessionState` describes the in-memory state of one running application instance.
 
@@ -252,7 +254,7 @@ Article and thread objects must not be written to disk. The newsrc file is the o
 
 Within one session, an article may be retained in memory for navigation or de-duplication, but memory retention is not persistent cache behavior. Protocol retrieval should be used when an object is not already in the current session state. A memory limit or eviction policy may be added later, but eviction must not alter read state or persisted newsrc state.
 
-### Read and Selection State
+### Read and Selection State — Implemented
 
 Read state is derived from `NewsrcState.read_ranges` and the current server number for each article in a group. An article selected for reading but not yet rendered should not be marked read merely by loading metadata.
 
@@ -260,7 +262,7 @@ An article is marked read only after it has been selected and presented in artic
 
 The initial command-line article view accepts `--group <name> --article <number>`. It retrieves headers and body, renders the article, and marks it read only after the terminal output has been flushed successfully. The updated newsrc is then saved atomically.
 
-### Pagination State
+### Pagination State — In progress
 
 Pagination is derived layout data, not article or thread state. It should contain:
 
@@ -271,7 +273,7 @@ Pagination is derived layout data, not article or thread state. It should contai
 
 The same thread or article should not contain screen-specific layout fields.
 
-### Relationships
+### Relationships — In progress
 
 The intended ownership is:
 
@@ -282,7 +284,7 @@ The intended ownership is:
 * `Article` owns article content and references.
 * `Thread` owns relationships among known articles.
 
-### Module Boundaries
+### Module Boundaries — Implemented
 
 Implementations should preserve these boundaries:
 
@@ -294,11 +296,11 @@ Implementations should preserve these boundaries:
 
 Protocol types should not implement terminal rendering. Rendering code should not read or write files or directly issue NNTP commands.
 
-## NNTP Behavior
+## NNTP Behavior — In progress
 
 This section specifies the server-facing behavior for the NNTP protocol implementation. It is independent of rendering and persistence, and should be testable with a fake NNTP server.
 
-### Scope
+### Scope — In progress
 
 The initial implementation should support:
 
@@ -316,7 +318,7 @@ Article bodies and decoded article content must not be persisted. All article co
 
 The initial implementation should not require posting, NNTP compression, streaming extensions, or asynchronous cancellation.
 
-### Transport
+### Transport — Implemented
 
 The protocol implementation should use CRLF line endings on the wire and should exchange only complete NNTP lines for commands.
 
@@ -338,7 +340,7 @@ The server greeting is the first response after connecting:
 
 For secure connections, TLS must be established before reading the server greeting. Certificate verification should use the system trust store. Explicitly permitting a disabled certificate check is not an initial requirement.
 
-### Session Startup
+### Session Startup — In progress
 
 After the greeting, use this order:
 
@@ -365,7 +367,7 @@ Capabilities should be stored as protocol state, not as server-specific booleans
 
 Compression and STARTTLS are out of scope for implicit-TLS startup. A server requiring plaintext STARTTLS must not be upgraded unless that behavior is deliberately added.
 
-### Authentication
+### Authentication — In progress
 
 Authentication should occur only after capability or greeting state indicates that NNTP auth is needed or requested.
 
@@ -392,7 +394,7 @@ Username and password values must be passed to NNTP as protocol arguments withou
 
 An unauthenticated server may expose only limited groups. This is a normal server state, not an automatic fatal error. A requested operation may still fail with `480`, in which case it should prompt or re-run authentication and then retry at most once.
 
-### Low-Level Response Handling
+### Low-Level Response Handling — Implemented
 
 Every response should be represented by:
 
@@ -419,7 +421,7 @@ Multiline reads must stop at an exact line containing only `.`. Dot-stuffed line
 
 UTF-8 decoding must not occur before the model or decoder boundary. NNTP text and headers may contain charset-specific bytes and malformed sequences.
 
-### Group Operations
+### Group Operations — In progress
 
 Start a group by sending `GROUP <name>` and process `211`:
 
@@ -466,7 +468,7 @@ For each overview row:
 * duplicate article numbers should resolve to the last complete row;
 * no header field may be used to prove message identity except `Message-ID`.
 
-### Initial Overview Range
+### Initial Overview Range — In progress
 
 Large groups can contain hundreds of thousands or millions of article numbers. Loading every overview row at startup would make startup slow, consume substantial memory, and produce more metadata than the user can view. Loading only a tiny fixed range may hide older unread threads and make navigation incomplete.
 
@@ -508,7 +510,7 @@ Status `423` means unknown article number. `430` means unknown article or no art
 
 Do not retain `423`, `430`, or permanent server failures as article content. Such responses may appear only in transient operation results and must not create or update a cached article.
 
-### Header and Body Parsing
+### Header and Body Parsing — Implemented
 
 Full article parsing should occur after a successful multiline response:
 
@@ -535,7 +537,7 @@ recognized character sets. It returns typed diagnostics for malformed or
 unsupported content rather than silently treating it as successfully decoded.
 The raw article remains unchanged; callers choose how to report decoder issues.
 
-### Failure Policy
+### Failure Policy — Planned
 
 Protocol operations should report typed failures:
 
@@ -561,7 +563,7 @@ The default failure policy is:
 * reconnecting must repeat greeting, capabilities, and authentication startup;
 * selection or read-state mutations must not occur before a successful operation result.
 
-### Concurrency and Lifecycle
+### Concurrency and Lifecycle — In progress
 
 Only one NNTP session should exist per application instance.
 
@@ -587,7 +589,7 @@ The session should expose operations with explicit enter/leave semantics:
 
 Async implementation is deferred. A synchronous implementation may block for bounded network operations. Tokio or another asynchronous runtime may be adopted only if it becomes necessary for terminal responsiveness or concurrent I/O.
 
-### Logging and Privacy
+### Logging and Privacy — In progress
 
 Logs should contain status codes and command names, not full passwords or article bodies.
 
@@ -608,7 +610,7 @@ Logs must not contain:
 * private article bodies;
 * user configuration secrets.
 
-### Server Interoperability
+### Server Interoperability — In progress
 
 The initial target is Eternal-September. Before assuming full compatibility:
 
@@ -633,7 +635,7 @@ The protocol implementation should include fixtures for successful and malformed
 * dot-stuffed multiline data;
 * timeout and disconnect.
 
-## Screen Specification
+## Screen Specification — In progress
 
 The terminal screen layouts and interactions are specified in
 [screens.md](./screens.md).
@@ -656,7 +658,7 @@ an explicit error if the requested root is outside the configured overview
 window. The selected article follows the normal fetch, decode, render, and
 post-flush read-marking flow; navigation alone never marks it read.
 
-## Config
+## Config — In progress
 
 We need a config file where we can set up the server to connect to and passwords.
 
@@ -686,10 +688,10 @@ alt.folklore.computers: 1-236928,236930-2369322,236930
 rec.arts.sf.written: 1-639923
 ```
 
-## Multiple instances
+## Multiple instances — Planned
 
 Disallow multiple instances of trn running at once for now.
 
-## Editor
+## Editor — Planned
 
 This should obey the `BTRN_EDITOR` variable, then the `EDITOR` variable, then just run `vim`.
