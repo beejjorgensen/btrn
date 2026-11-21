@@ -22,4 +22,5 @@ description: "Test btrn terminal state, key dispatch, pagination, rendering snap
 5. Assert text and inverse state where practical; keep snapshots deterministic.
 6. Run narrow state/snapshot tests before pseudo-terminal journeys.
 
-Use [terminal coverage](./references/coverage.md) and [architecture](../../../docs/architecture.md).
+Use [terminal coverage](./references/coverage.md) and
+[testing specification](../../../docs/testing.md).

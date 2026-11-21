@@ -1,6 +1,8 @@
 # btrn agent instructions
 
-This is a from-scratch Rust USENET newsreader. The product specification is in [docs/architecture.md](docs/architecture.md).
+This is a from-scratch Rust USENET newsreader. The product specification index is
+in [docs/architecture.md](docs/architecture.md), with subsystem details in
+the linked documents in [docs/](docs/).
 
 ## Always apply
 

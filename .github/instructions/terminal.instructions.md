@@ -20,4 +20,4 @@ applyTo:
 - The currently presented article is fully inverse in the thread hierarchy; previously viewed articles invert only their numbers.
 - Append `(?)` only to unresolved-parent hierarchy entries.
 - Mark an article read only after its complete article view has been rendered and flushed successfully.
-- Keep pseudo-terminal coverage limited to the critical journeys defined in [architecture](../../docs/architecture.md).
+- Keep pseudo-terminal coverage limited to the critical journeys defined in [testing specification](../../docs/testing.md).

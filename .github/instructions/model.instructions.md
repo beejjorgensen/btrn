@@ -23,4 +23,4 @@ applyTo:
 - Build thread edges from Message-ID references only: prefer the last `References` ID, use `In-Reply-To` only when references are absent, and keep unresolved parents explicit rather than inferring from subjects or article order.
 - Loading overview/article metadata must not change read state. Mark reads only through an explicit operation keyed by group and server article number; preserve an existing subscription marker and do not implicitly subscribe a group.
 - Session operations must report explicit success/failure and mutate state only after a successful operation result.
-- Read [architecture](../../docs/architecture.md) for the complete ownership and relationship rules.
+- Read [core model specification](../../docs/model.md) for ownership and relationship rules.

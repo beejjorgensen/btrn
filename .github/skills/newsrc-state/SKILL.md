@@ -15,4 +15,5 @@ description: "Implement or test newsrc parsing, subscriptions, read ranges, atom
 6. Write atomically and preserve unrelated data/comments only if round-trip behavior is intentionally supported.
 7. Test malformed input and range normalization without a live server or terminal.
 
-Use [newsrc checklist](./references/checklist.md) and [architecture](../../../docs/architecture.md).
+Use [newsrc checklist](./references/checklist.md) and
+[persistence specification](../../../docs/persistence.md).
