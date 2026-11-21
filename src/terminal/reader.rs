@@ -406,7 +406,7 @@ struct ThreadPage {
 fn thread_pages(threads: &ThreadList, state: &SessionState, height: u16) -> Vec<ThreadPage> {
     const MAX_PAGE_THREADS: usize = 35;
     let mut pages = Vec::new();
-    let capacity = usize::from(height).saturating_sub(2);
+    let capacity = usize::from(height).saturating_sub(4);
     if capacity == 0 {
         return vec![ThreadPage::default()];
     }
@@ -578,7 +578,7 @@ fn assigned_thread_letter(
 }
 
 fn page_thread_row_y(page: &ThreadPage, row_index: usize) -> Option<u16> {
-    let mut y = 1usize;
+    let mut y = 2usize;
     for entry in &page.entries {
         if entry.index == row_index {
             return u16::try_from(y).ok();
@@ -634,8 +634,12 @@ fn render_thread_list(
         width,
         false,
     )?;
-    if height < 3 {
-        if height == 2 {
+    if height < 4 {
+        if height >= 2 {
+            queue!(
+                output,
+                crossterm::cursor::MoveTo(0, height.saturating_sub(1))
+            )?;
             write_terminal_line(
                 output,
                 format_args!("-- {page_position} --"),
@@ -646,8 +650,11 @@ fn render_thread_list(
         }
         return output.flush();
     }
+    output.write_all(b"\r\n")?;
+    let mut list_lines = 0usize;
     if reader.threads.rows.is_empty() {
         write_terminal_line(output, format_args!("No threads"), true, width, false)?;
+        list_lines = 1;
     }
     for entry in &page.entries {
         let row = &reader.threads.rows[entry.index];
@@ -681,8 +688,10 @@ fn render_thread_list(
             .unwrap_or_else(|| row.subject.clone());
         let line = thread_heading(letter, marked, author, row.unread_count, &lead, unresolved);
         write_terminal_line(output, format_args!("{line}"), true, width, false)?;
+        list_lines += 1;
         for author in entry.authors.iter().skip(1) {
             write_terminal_line(output, format_args!("   {author}"), true, width, false)?;
+            list_lines += 1;
         }
         if entry.omitted_authors > 0 {
             write_terminal_line(
@@ -692,8 +701,16 @@ fn render_thread_list(
                 width,
                 false,
             )?;
+            list_lines += 1;
         }
     }
+    let prompt_row = 3usize
+        .saturating_add(list_lines)
+        .min(usize::from(height.saturating_sub(1)));
+    queue!(
+        output,
+        crossterm::cursor::MoveTo(0, u16::try_from(prompt_row).unwrap_or(u16::MAX))
+    )?;
     write_terminal_line(
         output,
         format_args!(
@@ -841,7 +858,7 @@ mod tests {
     fn marks_persist_across_pages_and_space_starts_marked_threads_on_last_page() {
         let data = session_with_threads(5);
         let mut reader = reader_for(&data);
-        let pages = thread_pages(&reader.threads, &data, 4);
+        let pages = thread_pages(&reader.threads, &data, 6);
         assert_eq!(pages.len(), 3);
 
         assert_eq!(
@@ -851,7 +868,7 @@ mod tests {
         assert!(reader.marked_threads.contains(&5));
         assert!(reader.should_start_on_space(pages.len()));
         let mut output = Vec::new();
-        render_thread_list(&mut output, &reader, &data, &pages, 80, 4).unwrap();
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 6).unwrap();
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("a+"));
         assert!(rendered.contains("\u{1b}[7mcomp.test\u{1b}[0m"));
@@ -885,7 +902,7 @@ mod tests {
     fn space_advances_until_last_page_then_unmarked_means_all_threads() {
         let data = session_with_threads(5);
         let mut reader = reader_for(&data);
-        let pages = thread_pages(&reader.threads, &data, 4);
+        let pages = thread_pages(&reader.threads, &data, 6);
         assert!(!reader.should_start_on_space(pages.len()));
         reader.next_page(pages.len());
         assert_eq!(reader.thread_page, 1);
@@ -901,7 +918,7 @@ mod tests {
     fn previous_and_next_page_clamp_at_ends_and_resize_clamps_page_index() {
         let data = session_with_threads(5);
         let mut reader = reader_for(&data);
-        let small_pages = thread_pages(&reader.threads, &data, 4);
+        let small_pages = thread_pages(&reader.threads, &data, 6);
         reader.previous_page();
         assert_eq!(reader.thread_page, 0);
         reader.next_page(small_pages.len());
@@ -919,7 +936,7 @@ mod tests {
         let data = session_with_threads(5);
         let reader = reader_for(&data);
         let pages = thread_pages(&reader.threads, &data, 10);
-        assert_eq!(page_thread_row_y(&pages[0], 2), Some(3));
+        assert_eq!(page_thread_row_y(&pages[0], 2), Some(4));
 
         let mut output = Vec::new();
         selector::write_mark(&mut output, 1, 3, true).unwrap();
@@ -977,8 +994,24 @@ mod tests {
         render_thread_list(&mut output, &reader, &data, &pages, 80, 10).unwrap();
         let rendered = String::from_utf8(output).unwrap();
 
+        assert!(rendered.contains("articles\r\n\r\n"));
         assert!(rendered.contains("Alice Example"));
         assert!(!rendered.contains("alice@example.com"));
+        assert!(rendered.contains("\u{1b}[5;1H"));
+    }
+
+    #[test]
+    fn full_thread_page_keeps_one_blank_row_before_bottom_prompt() {
+        let data = session_with_threads(4);
+        let reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 8);
+        let mut output = Vec::new();
+
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 8).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        assert_eq!(pages[0].entries.len(), 4);
+        assert!(rendered.contains("\u{1b}[8;1H"));
     }
 
     #[test]
@@ -994,17 +1027,17 @@ mod tests {
         )
         .unwrap();
         let threads = ThreadList::from_session(&data, "comp.test").unwrap();
-        let pages = thread_pages(&threads, &data, 6);
+        let pages = thread_pages(&threads, &data, 7);
 
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].entries.len(), 2);
         assert_eq!(
             page_thread_row_y(&pages[0], pages[0].entries[0].index),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             page_thread_row_y(&pages[0], pages[0].entries[1].index),
-            Some(3)
+            Some(4)
         );
     }
 
@@ -1067,7 +1100,7 @@ mod tests {
         )
         .unwrap();
         let threads = ThreadList::from_session(&data, "comp.test").unwrap();
-        let pages = thread_pages(&threads, &data, 5);
+        let pages = thread_pages(&threads, &data, 7);
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0].entries[0].index, 0);
         assert_eq!(pages[0].entries[0].omitted_authors, 2);
@@ -1076,13 +1109,13 @@ mod tests {
         let mut reader = ReaderState::new(threads);
         reader.thread_page = 0;
         let mut output = Vec::new();
-        render_thread_list(&mut output, &reader, &data, &pages, 80, 5).unwrap();
+        render_thread_list(&mut output, &reader, &data, &pages, 80, 7).unwrap();
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("... etc. [2 lines total]"));
         assert!(rendered.contains("\r\n   author-reply-1\r\n"));
         assert!(!rendered.contains("author-reply-3"));
         assert!(rendered.contains("Top 50%"));
-        assert_eq!(rendered.matches("\r\n").count(), 4);
+        assert_eq!(rendered.matches("\r\n").count(), 5);
         assert!(!rendered.ends_with("\r\n"));
     }
 
@@ -1099,7 +1132,7 @@ mod tests {
         )
         .unwrap();
         let threads = ThreadList::from_session(&data, "comp.test").unwrap();
-        let pages = thread_pages(&threads, &data, 4);
+        let pages = thread_pages(&threads, &data, 6);
 
         assert_eq!(pages.len(), 2);
         assert_eq!(pages[0].entries.len(), 1);

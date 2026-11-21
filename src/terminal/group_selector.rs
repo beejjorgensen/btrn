@@ -110,7 +110,7 @@ impl GroupSelectorScreen {
 
 fn group_pages(groups: &GroupSelector, height: u16) -> Vec<GroupPage> {
     const MAX_PAGE_ITEMS: usize = 35;
-    let capacity = usize::from(height).saturating_sub(3).min(MAX_PAGE_ITEMS);
+    let capacity = usize::from(height).saturating_sub(4).min(MAX_PAGE_ITEMS);
     if capacity == 0 {
         return vec![GroupPage {
             entries: Vec::new(),
@@ -286,8 +286,10 @@ fn render_group_list(
     if height > 1 {
         output.write_all(b"\r\n")?;
     }
-    if screen.groups.rows.is_empty() && height > 3 {
+    let mut list_lines = 0usize;
+    if screen.groups.rows.is_empty() && height > 5 {
         selector::write_line(output, "No newsgroups", true, width, false)?;
+        list_lines = 1;
     }
     for (visible_index, group_index) in page.entries.iter().enumerate() {
         let Some(row) = screen.groups.rows.get(*group_index) else {
@@ -306,11 +308,15 @@ fn render_group_list(
             width,
             false,
         )?;
+        list_lines += 1;
     }
     if height > 0 {
+        let prompt_row = 3usize
+            .saturating_add(list_lines)
+            .min(usize::from(height.saturating_sub(1)));
         queue!(
             output,
-            crossterm::cursor::MoveTo(0, height.saturating_sub(1))
+            crossterm::cursor::MoveTo(0, u16::try_from(prompt_row).unwrap_or(u16::MAX))
         )?;
         selector::write_line(
             output,
@@ -406,12 +412,22 @@ mod tests {
         let groups = groups(30);
         let pages = group_pages(&groups, 8);
 
-        assert_eq!(pages.len(), 6);
-        assert_eq!(pages[0].entries, [0, 1, 2, 3, 4]);
-        assert_eq!(pages[0].end_index, 5);
-        assert_eq!(pages[5].entries, [25, 26, 27, 28, 29]);
+        assert_eq!(pages.len(), 8);
+        assert_eq!(pages[0].entries, [0, 1, 2, 3]);
+        assert_eq!(pages[0].end_index, 4);
+        assert_eq!(pages[7].entries, [28, 29]);
         assert_eq!(group_row_y(&pages[0], 0), Some(2));
         assert_eq!(selector::selection_letter(24), Some('z'));
+    }
+
+    #[test]
+    fn group_pages_leave_a_blank_row_before_the_footer() {
+        let groups = groups(10);
+        let pages = group_pages(&groups, 8);
+
+        assert_eq!(pages[0].entries.len(), 4);
+        assert_eq!(group_row_y(&pages[0], 3), Some(5));
+        assert_eq!(group_row_y(&pages[0], 3).unwrap() + 1, 6);
     }
 
     #[test]
@@ -433,11 +449,13 @@ mod tests {
         let mut screen = screen(6);
         let page_count = group_pages(&screen.groups, 6).len();
 
-        assert_eq!(
-            screen.start_or_advance(page_count),
-            SpaceAction::AdvancePage
-        );
-        assert_eq!(screen.page_index, 1);
+        for expected_page in 1..page_count {
+            assert_eq!(
+                screen.start_or_advance(page_count),
+                SpaceAction::AdvancePage
+            );
+            assert_eq!(screen.page_index, expected_page);
+        }
         assert_eq!(
             screen.start_or_advance(page_count),
             SpaceAction::StartGroups((0..6).map(|index| format!("group.{index:02}")).collect())
@@ -490,9 +508,25 @@ mod tests {
         let rendered = String::from_utf8(output).unwrap();
 
         assert!(rendered.contains("\u{1b}[7mNewsgroups\u{1b}[0m"));
+        assert!(rendered.contains("2 groups\r\n\r\n"));
         assert!(rendered.contains("a    10 group.00"));
+        assert!(rendered.contains("\u{1b}[6;1H"));
         assert!(rendered.contains("\u{1b}[7m-- Select a newsgroup"));
         assert!(rendered.contains("All"));
+    }
+
+    #[test]
+    fn full_group_page_keeps_one_blank_row_before_bottom_prompt() {
+        let newsrc = subscribed_newsrc(4);
+        let screen = GroupSelectorScreen::new(groups(4), &newsrc);
+        let pages = group_pages(&screen.groups, 8);
+        let mut output = Vec::new();
+
+        render_group_list(&mut output, &screen, &newsrc, &pages, 80, 8).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        assert_eq!(pages[0].entries.len(), 4);
+        assert!(rendered.contains("\u{1b}[8;1H"));
     }
 
     #[test]

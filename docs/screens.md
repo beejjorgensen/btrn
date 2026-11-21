@@ -37,7 +37,17 @@ j    16 alt.os.linux
 
 The word `Newsgroups` at the top should be in inverse text.
 
-The entire prompt line at the bottom should be in inverse text.
+The entire prompt line should be in inverse text.
+
+There should be one blank line between the `Newsgroups` header at the
+top and the list of newsgroups.
+
+There should be one blank line between the end of the list of newsgroups
+and the prompt line.
+
+The prompt line should appear one line below that blank line. It should not
+be pinned to the bottom of the screen when there is unused space below it.
+When the list fills the available space, the prompt may be at the bottom.
 
 Typing the letter beside a newsgroup marks it for reading. A `+` appears
 immediately after the letter without shifting the rest of the row. Multiple
@@ -119,6 +129,16 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
 
 For the username column in the thread selector, just list their name,
 not an email.
+
+There should be one blank line between the newsgroup name header at the
+top and the list of threads.
+
+There should be one blank line between the end of the list of threads
+and the prompt line.
+
+The prompt line should appear one line below that blank line. It should not
+be pinned to the bottom of the screen when there is unused space below it.
+When the list fills the available space, the prompt may be at the bottom.
 
 The thread article count should be at column 23-25 (inclusive, 1-based),
 right justified.
