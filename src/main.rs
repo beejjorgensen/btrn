@@ -1,6 +1,7 @@
+pub mod cli;
 pub mod config;
 pub mod decoder;
-pub mod group_overview;
+pub mod group_loader;
 pub mod model;
 pub mod nntp;
 pub mod persistence;
@@ -227,7 +228,7 @@ fn main() {
                     ..SessionState::default()
                 };
                 if interactive {
-                    let loaded = match group_overview::load_group_threads(
+                    let loaded = match group_loader::load_group_threads(
                         &mut session,
                         &mut state,
                         &group,
@@ -256,7 +257,7 @@ fn main() {
                     return;
                 }
                 let article_to_present = if let Some(root_article_number) = selected_thread_root {
-                    let loaded = match group_overview::load_group_threads(
+                    let loaded = match group_loader::load_group_threads(
                         &mut session,
                         &mut state,
                         &group,
@@ -278,7 +279,7 @@ fn main() {
                             loaded.out_of_range_rows
                         );
                     }
-                    match group_overview::first_unread_article_for_thread_root(
+                    match state::article_navigation::first_unread_article_for_thread_root(
                         &state,
                         &name,
                         root_article_number,
@@ -352,7 +353,7 @@ fn main() {
                     }
                     return;
                 }
-                let loaded = match group_overview::load_group_threads(
+                let loaded = match group_loader::load_group_threads(
                     &mut session,
                     &mut state,
                     &group,
@@ -375,9 +376,9 @@ fn main() {
                     );
                 }
                 if flat_overview {
-                    print!("{}", group_overview::format_flat_overview(&state, &name));
+                    print!("{}", cli::format_flat_overview(&state, &name));
                 } else {
-                    print!("{}", group_overview::format_thread_summary(&loaded));
+                    print!("{}", cli::format_thread_summary(&loaded));
                 }
             }
             Err(error) => {
@@ -468,7 +469,7 @@ fn main() {
                         std::process::exit(1);
                     }
                 };
-                let loaded = match group_overview::load_group_threads_with_progress(
+                let loaded = match group_loader::load_group_threads_with_progress(
                     &mut session,
                     &mut state,
                     &group,

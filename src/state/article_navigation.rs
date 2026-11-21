@@ -79,6 +79,55 @@ impl ArticleNavigation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadRootError {
+    State(StateError),
+    OutsideLoadedWindow,
+    NotRoot,
+    NoArticle,
+}
+
+impl std::fmt::Display for ThreadRootError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::State(error) => write!(formatter, "{error}"),
+            Self::OutsideLoadedWindow => {
+                write!(
+                    formatter,
+                    "thread root is outside the loaded overview window"
+                )
+            }
+            Self::NotRoot => write!(formatter, "article number does not identify a thread root"),
+            Self::NoArticle => write!(formatter, "thread has no loaded articles"),
+        }
+    }
+}
+
+impl std::error::Error for ThreadRootError {}
+
+pub fn first_unread_article_for_thread_root(
+    state: &SessionState,
+    group: &str,
+    root_article_number: u64,
+) -> Result<u64, ThreadRootError> {
+    let group_state = state
+        .groups
+        .get(group)
+        .ok_or(ThreadRootError::State(StateError::GroupNotLoaded))?;
+    let root = group_state
+        .threads
+        .nodes
+        .get(&root_article_number)
+        .ok_or(ThreadRootError::OutsideLoadedWindow)?;
+    if root.parent.is_some() {
+        return Err(ThreadRootError::NotRoot);
+    }
+    ArticleNavigation::from_thread(state, group, root_article_number)
+        .map_err(ThreadRootError::State)?
+        .selected_article_number()
+        .ok_or(ThreadRootError::NoArticle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +210,25 @@ mod tests {
         assert_eq!(navigation.previous_unread_article(&state), None);
         assert_eq!(navigation.selected_article_number(), Some(30));
         assert!(!state.is_read("comp.test", 30));
+    }
+
+    #[test]
+    fn chooses_first_unread_article_and_reports_root_outside_loaded_window() {
+        let mut state = state();
+        state.mark_article_read("comp.test", 10).unwrap();
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 10),
+            Ok(20)
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 999),
+            Err(ThreadRootError::OutsideLoadedWindow)
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 20),
+            Err(ThreadRootError::NotRoot)
+        );
+        assert!(!state.is_read("comp.test", 20));
     }
 
     #[test]
