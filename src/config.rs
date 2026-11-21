@@ -1,3 +1,5 @@
+use serde::Deserialize;
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -26,9 +28,9 @@ pub struct Credentials {
 #[derive(Debug)]
 pub enum ConfigError {
     Io(std::io::Error),
-    InvalidLine { line_number: usize },
-    UnknownKey { line_number: usize },
-    InvalidValue { line_number: usize },
+    InvalidLine { line_number: Option<usize> },
+    UnknownKey { line_number: Option<usize> },
+    InvalidValue { line_number: Option<usize> },
     MissingServer,
     MissingUsername,
     MissingPassword,
@@ -44,13 +46,13 @@ impl std::fmt::Display for ConfigError {
         match self {
             Self::Io(error) => write!(formatter, "could not read config: {error}"),
             Self::InvalidLine { line_number } => {
-                write!(formatter, "invalid config syntax on line {line_number}")
+                write!(formatter, "invalid config syntax{}", on_line(*line_number))
             }
             Self::UnknownKey { line_number } => {
-                write!(formatter, "unknown config key on line {line_number}")
+                write!(formatter, "unknown config key{}", on_line(*line_number))
             }
             Self::InvalidValue { line_number } => {
-                write!(formatter, "invalid config value on line {line_number}")
+                write!(formatter, "invalid config value{}", on_line(*line_number))
             }
             Self::MissingServer => write!(
                 formatter,
@@ -79,6 +81,61 @@ impl std::fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
+
+fn on_line(line_number: Option<usize>) -> String {
+    line_number.map_or_else(String::new, |line| format!(" on line {line}"))
+}
+
+/// Top-level keys accepted in `config.toml`; must match `ConfigFile`.
+const KNOWN_KEYS: [&str; 11] = [
+    "server",
+    "port",
+    "use_tls",
+    "username",
+    "password",
+    "password_command",
+    "editor",
+    "connect_timeout",
+    "read_timeout",
+    "initial_overview_limit",
+    "overview_chunk_size",
+];
+
+/// The shape of `config.toml`. Unset keys leave `Config` defaults in place.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigFile {
+    server: Option<String>,
+    port: Option<NonZeroU16>,
+    use_tls: Option<bool>,
+    username: Option<String>,
+    password: Option<String>,
+    password_command: Option<Vec<String>>,
+    editor: Option<String>,
+    connect_timeout: Option<u64>,
+    read_timeout: Option<u64>,
+    initial_overview_limit: Option<usize>,
+    overview_chunk_size: Option<usize>,
+}
+
+/// Classifies a `toml` error by category and line only. The crate's own
+/// messages can quote config values such as passwords, so they are never used.
+fn config_error(input: &str, error: &toml::de::Error) -> ConfigError {
+    let line_number = error.span().map(|span| {
+        input[..span.start.min(input.len())]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1
+    });
+    match input.parse::<toml::Table>() {
+        Err(_) => ConfigError::InvalidLine { line_number },
+        Ok(table) if table.keys().any(|key| !KNOWN_KEYS.contains(&key.as_str())) => {
+            ConfigError::UnknownKey { line_number }
+        }
+        Ok(_) => ConfigError::InvalidValue { line_number },
+    }
+}
 
 impl Config {
     pub fn from_environment() -> Self {
@@ -139,81 +196,40 @@ impl Config {
     }
 
     pub fn apply_toml(&mut self, input: &str) -> Result<(), ConfigError> {
-        for (index, line) in input.lines().enumerate() {
-            let line_number = index + 1;
-            let line = strip_comment(line).trim();
-            if line.is_empty() {
-                continue;
-            }
-            let Some((key, raw_value)) = line.split_once('=') else {
-                return Err(ConfigError::InvalidLine { line_number });
-            };
-            let key = key.trim();
-            let raw_value = raw_value.trim();
-            match key {
-                "server" => {
-                    self.server = Some(
-                        parse_string(raw_value).ok_or(ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                "username" => {
-                    self.username = Some(
-                        parse_string(raw_value).ok_or(ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                "password" => {
-                    self.password = Some(
-                        parse_string(raw_value).ok_or(ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                "password_command" => {
-                    self.password_command = Some(
-                        parse_string_array(raw_value)
-                            .ok_or(ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                "editor" => {
-                    self.editor =
-                        parse_string(raw_value).ok_or(ConfigError::InvalidValue { line_number })?
-                }
-                "use_tls" => {
-                    self.use_tls = raw_value
-                        .parse()
-                        .map_err(|_| ConfigError::InvalidValue { line_number })?
-                }
-                "port" => {
-                    self.port = raw_value
-                        .parse()
-                        .ok()
-                        .filter(|port| *port > 0)
-                        .ok_or(ConfigError::InvalidValue { line_number })?
-                }
-                "initial_overview_limit" => {
-                    self.initial_overview_limit = raw_value
-                        .parse()
-                        .map_err(|_| ConfigError::InvalidValue { line_number })?
-                }
-                "overview_chunk_size" => {
-                    self.overview_chunk_size = raw_value
-                        .parse()
-                        .map_err(|_| ConfigError::InvalidValue { line_number })?
-                }
-                "connect_timeout" => {
-                    self.connect_timeout = Duration::from_secs(
-                        raw_value
-                            .parse()
-                            .map_err(|_| ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                "read_timeout" => {
-                    self.read_timeout = Duration::from_secs(
-                        raw_value
-                            .parse()
-                            .map_err(|_| ConfigError::InvalidValue { line_number })?,
-                    )
-                }
-                _ => return Err(ConfigError::UnknownKey { line_number }),
-            }
+        let file: ConfigFile =
+            toml::from_str(input).map_err(|error| config_error(input, &error))?;
+        if let Some(server) = file.server {
+            self.server = Some(server);
+        }
+        if let Some(port) = file.port {
+            self.port = port.get();
+        }
+        if let Some(use_tls) = file.use_tls {
+            self.use_tls = use_tls;
+        }
+        if let Some(username) = file.username {
+            self.username = Some(username);
+        }
+        if let Some(password) = file.password {
+            self.password = Some(password);
+        }
+        if let Some(command) = file.password_command {
+            self.password_command = Some(command);
+        }
+        if let Some(editor) = file.editor {
+            self.editor = editor;
+        }
+        if let Some(seconds) = file.connect_timeout {
+            self.connect_timeout = Duration::from_secs(seconds);
+        }
+        if let Some(seconds) = file.read_timeout {
+            self.read_timeout = Duration::from_secs(seconds);
+        }
+        if let Some(limit) = file.initial_overview_limit {
+            self.initial_overview_limit = limit;
+        }
+        if let Some(size) = file.overview_chunk_size {
+            self.overview_chunk_size = size;
         }
         Ok(())
     }
@@ -247,76 +263,6 @@ impl Default for Config {
     fn default() -> Self {
         Self::from_environment()
     }
-}
-
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in line.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' && quoted {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == '#' && !quoted {
-            return &line[..index];
-        }
-    }
-    line
-}
-
-fn parse_string(value: &str) -> Option<String> {
-    let inner = value.strip_prefix('"')?.strip_suffix('"')?;
-    let mut result = String::new();
-    let mut characters = inner.chars();
-    while let Some(character) = characters.next() {
-        if character != '\\' {
-            result.push(character);
-            continue;
-        }
-        result.push(match characters.next()? {
-            '"' => '"',
-            '\\' => '\\',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            _ => return None,
-        });
-    }
-    Some(result)
-}
-
-fn parse_string_array(value: &str) -> Option<Vec<String>> {
-    let inner = value.strip_prefix('[')?.strip_suffix(']')?.trim();
-    if inner.is_empty() {
-        return Some(Vec::new());
-    }
-    let mut values = Vec::new();
-    let mut start = 0;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in inner.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' && quoted {
-            escaped = true;
-        } else if character == '"' {
-            quoted = !quoted;
-        } else if character == ',' && !quoted {
-            values.push(parse_string(inner[start..index].trim())?);
-            start = index + 1;
-        }
-    }
-    if quoted || escaped {
-        return None;
-    }
-    if start < inner.len() {
-        values.push(parse_string(inner[start..].trim())?);
-    } else if !inner.ends_with(',') {
-        return None;
-    }
-    Some(values)
 }
 
 fn resolve_password_command(command: &[String]) -> Result<String, ConfigError> {
@@ -400,12 +346,106 @@ mod tests {
         let mut config = Config::with_paths(PathBuf::from("/tmp/btrn-config"), "vim".into());
         assert!(matches!(
             config.apply_toml("server = 7"),
-            Err(ConfigError::InvalidValue { line_number: 1 })
+            Err(ConfigError::InvalidValue {
+                line_number: Some(1)
+            })
         ));
         assert!(matches!(
             config.apply_toml("mystery = true"),
-            Err(ConfigError::UnknownKey { line_number: 1 })
+            Err(ConfigError::UnknownKey {
+                line_number: Some(1)
+            })
         ));
+    }
+
+    fn apply(input: &str) -> Result<Config, ConfigError> {
+        let mut config = Config::with_paths(PathBuf::from("/tmp/btrn-config"), "vim".into());
+        config.apply_toml(input).map(|()| config)
+    }
+
+    #[test]
+    fn reports_each_error_category_with_its_line() {
+        let prefix = "server = \"news.example.net\"\n# comment\n";
+        assert!(matches!(
+            apply(&format!("{prefix}server_name = \"x\"\n")),
+            Err(ConfigError::UnknownKey {
+                line_number: Some(3)
+            })
+        ));
+        assert!(matches!(
+            apply(&format!("{prefix}port = \"563\"\n")),
+            Err(ConfigError::InvalidValue {
+                line_number: Some(3)
+            })
+        ));
+        assert!(matches!(
+            apply(&format!("{prefix}username = \n")),
+            Err(ConfigError::InvalidLine {
+                line_number: Some(3)
+            })
+        ));
+        assert!(matches!(
+            apply("[servers]\nhost = \"x\"\n"),
+            Err(ConfigError::UnknownKey { .. })
+        ));
+        assert!(matches!(
+            apply("[server]\nhost = \"x\"\n"),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_out_of_range_numbers_and_duplicate_keys() {
+        for input in [
+            "port = 0",
+            "port = 70000",
+            "connect_timeout = -1",
+            "use_tls = 1",
+        ] {
+            assert!(
+                matches!(apply(input), Err(ConfigError::InvalidValue { .. })),
+                "{input}"
+            );
+        }
+        assert!(apply("server = \"a\"\nserver = \"b\"\n").is_err());
+    }
+
+    #[test]
+    fn accepts_standard_toml_string_and_array_forms() {
+        let config = apply(
+            "server = 'news.example.net'\npassword_command = [\n  \"pass\",\n  'show', # entry\n  \"news/\\u00e9\",\n]\n",
+        )
+        .unwrap();
+        assert_eq!(config.server.as_deref(), Some("news.example.net"));
+        assert_eq!(
+            config.password_command,
+            Some(vec!["pass".into(), "show".into(), "news/\u{e9}".into()])
+        );
+    }
+
+    #[test]
+    fn unset_keys_keep_defaults() {
+        let config = apply("server = \"news.example.net\"").unwrap();
+        assert_eq!(config.port, 563);
+        assert!(config.use_tls);
+        assert_eq!(config.editor, "vim");
+        assert_eq!(config.read_timeout, Duration::from_secs(30));
+        assert!(config.password.is_none());
+        assert!(apply("").is_ok());
+    }
+
+    #[test]
+    fn config_errors_never_echo_config_contents() {
+        for input in [
+            "password = 7\nusername = \"hunter2\"",
+            "server = \"hunter2\" = x",
+            "port = \"hunter2\"",
+            "hunter2 = \"hunter2\"",
+        ] {
+            let message = apply(input).err().unwrap().to_string();
+            assert!(!message.contains("hunter2"), "{message}");
+            assert!(!message.contains('7'), "{message}");
+        }
     }
 
     #[test]

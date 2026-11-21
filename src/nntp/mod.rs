@@ -5,7 +5,7 @@ pub mod overview;
 
 use crate::persistence::newsrc::ArticleRange;
 pub use capabilities::ServerCapabilities;
-use group::GroupSelection;
+pub use group::GroupSelection;
 pub use overview::{OverviewError, OverviewFormat, OverviewRows};
 
 use rustls::pki_types::ServerName;

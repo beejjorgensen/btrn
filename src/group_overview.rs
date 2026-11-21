@@ -1,4 +1,4 @@
-use crate::nntp::{NntpSession, OverviewError};
+use crate::nntp::{GroupSelection, NntpSession, OverviewError};
 use crate::persistence::newsrc::plan_unread_chunks;
 use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_list::ThreadList;
@@ -62,9 +62,7 @@ impl std::error::Error for GroupOverviewError {}
 pub fn load_group_threads(
     session: &mut NntpSession,
     state: &mut SessionState,
-    group: &str,
-    first_article: u64,
-    last_article: u64,
+    group: &GroupSelection,
     initial_overview_limit: usize,
     overview_chunk_size: usize,
 ) -> Result<LoadedGroupThreads, GroupOverviewError> {
@@ -72,8 +70,6 @@ pub fn load_group_threads(
         session,
         state,
         group,
-        first_article,
-        last_article,
         initial_overview_limit,
         overview_chunk_size,
         |_, _| Ok(()),
@@ -83,20 +79,19 @@ pub fn load_group_threads(
 pub fn load_group_threads_with_progress(
     session: &mut NntpSession,
     state: &mut SessionState,
-    group: &str,
-    first_article: u64,
-    last_article: u64,
+    selection: &GroupSelection,
     initial_overview_limit: usize,
     overview_chunk_size: usize,
     mut on_progress: impl FnMut(usize, usize) -> io::Result<()>,
 ) -> Result<LoadedGroupThreads, GroupOverviewError> {
+    let group = selection.name.as_str();
     let read_ranges = state
         .newsrc
         .entry(group)
         .map_or(&[][..], |entry| entry.read_ranges.as_slice());
     let ranges = plan_unread_chunks(
-        first_article,
-        last_article,
+        selection.first_article,
+        selection.last_article,
         read_ranges,
         initial_overview_limit,
         overview_chunk_size,
@@ -308,9 +303,7 @@ mod tests {
         let loaded = load_group_threads_with_progress(
             &mut nntp,
             &mut state,
-            &selection.name,
-            selection.first_article,
-            selection.last_article,
+            &selection,
             3,
             2,
             |completed, total| {
@@ -396,9 +389,13 @@ mod tests {
         let loaded = load_group_threads_with_progress(
             &mut nntp,
             &mut state,
-            "empty.test",
-            0,
-            0,
+            &GroupSelection {
+                name: "empty.test".to_owned(),
+                count: 0,
+                first_article: 0,
+                last_article: 0,
+                count_consistent: true,
+            },
             10,
             5,
             |completed, total| {

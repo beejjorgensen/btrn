@@ -230,9 +230,7 @@ fn main() {
                     let loaded = match group_overview::load_group_threads(
                         &mut session,
                         &mut state,
-                        &name,
-                        group.first_article,
-                        group.last_article,
+                        &group,
                         config.initial_overview_limit,
                         config.overview_chunk_size,
                     ) {
@@ -261,9 +259,7 @@ fn main() {
                     let loaded = match group_overview::load_group_threads(
                         &mut session,
                         &mut state,
-                        &name,
-                        group.first_article,
-                        group.last_article,
+                        &group,
                         config.initial_overview_limit,
                         config.overview_chunk_size,
                     ) {
@@ -359,9 +355,7 @@ fn main() {
                 let loaded = match group_overview::load_group_threads(
                     &mut session,
                     &mut state,
-                    &name,
-                    group.first_article,
-                    group.last_article,
+                    &group,
                     config.initial_overview_limit,
                     config.overview_chunk_size,
                 ) {
@@ -477,9 +471,7 @@ fn main() {
                 let loaded = match group_overview::load_group_threads_with_progress(
                     &mut session,
                     &mut state,
-                    &name,
-                    group.first_article,
-                    group.last_article,
+                    &group,
                     config.initial_overview_limit,
                     config.overview_chunk_size,
                     |completed, total| {
