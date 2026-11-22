@@ -77,7 +77,21 @@ pub fn compose_followup(article: &DecodedArticle, identity: &PostingIdentity) ->
     }
 }
 
+/// A draft header line. Values can come from the followed-up-on article, and
+/// decoding can produce line breaks, so every control character becomes a
+/// space; otherwise a remote `Subject` could add header lines to the draft.
 fn header_line(name: &str, value: &str) -> String {
+    let value = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let value = value.trim();
     if value.is_empty() {
         format!("{name}:")
     } else {
@@ -176,6 +190,39 @@ mod tests {
             Some("user@example.com"),
             Some("Yoyodyne Industries"),
         )
+    }
+
+    #[test]
+    fn remote_line_breaks_cannot_add_header_lines() {
+        let draft = compose_followup(
+            &article(
+                &[
+                    ("Newsgroups", "comp.test"),
+                    (
+                        "Followup-To",
+                        "comp.test\nControl: rmgroup comp.test",
+                    ),
+                    (
+                        "Subject",
+                        "hello\nControl: cancel <victim@example.com>\r\nApproved: m@example.com\n\tfolded\u{0}",
+                    ),
+                ],
+                "body\n",
+            ),
+            &full_identity(),
+        );
+        let header_block = draft.text.split("\n\n").next().unwrap();
+        assert_eq!(
+            header_block.lines().collect::<Vec<_>>(),
+            [
+                "Newsgroups: comp.test Control: rmgroup comp.test",
+                "Subject: Re: hello Control: cancel <victim@example.com>  Approved: m@example.com  folded",
+                "Followup-To:",
+                "From: Example Name <user@example.com>",
+                "Organization: Yoyodyne Industries",
+                "Keywords:",
+            ]
+        );
     }
 
     #[test]

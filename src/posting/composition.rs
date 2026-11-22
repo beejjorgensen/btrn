@@ -6,6 +6,17 @@ use crate::model::article::is_valid_header_name;
 /// Longest allowed line in bytes, excluding the line ending.
 pub const MAX_LINE_BYTES: usize = 998;
 
+/// Headers that would change what the article does rather than what it says:
+/// cancel or replace other articles, act as a control message, or approve a
+/// moderated post. btrn refuses to send them.
+const REJECTED_HEADERS: [&str; 5] = [
+    "Control",
+    "Also-Control",
+    "Supersedes",
+    "Approved",
+    "Cancel-Key",
+];
+
 /// The edited composition: non-empty headers in file order and body lines.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Composition {
@@ -33,7 +44,9 @@ pub enum CompositionError {
     InvalidAddress,
     InvalidNewsgroups(&'static str),
     DuplicateHeader(String),
+    RejectedHeader(&'static str),
     InvalidHeaderLine(usize),
+    ControlCharacter(usize),
     MissingSeparator,
     LineTooLong(usize),
     NotUtf8,
@@ -62,9 +75,19 @@ impl std::fmt::Display for CompositionError {
                     "ERROR: the \"{name}:\" line appears more than once."
                 )
             }
+            Self::RejectedHeader(name) => {
+                write!(
+                    formatter,
+                    "ERROR: btrn does not send the \"{name}:\" header."
+                )
+            }
             Self::InvalidHeaderLine(line) => {
                 write!(formatter, "ERROR: line {line} is not a valid header line.")
             }
+            Self::ControlCharacter(line) => write!(
+                formatter,
+                "ERROR: line {line} contains a control character."
+            ),
             Self::MissingSeparator => write!(
                 formatter,
                 "ERROR: there is no blank line between the header and the body."
@@ -116,6 +139,12 @@ pub fn parse_composition(bytes: &[u8]) -> ParsedComposition {
 
     let mut raw_headers: Vec<(String, String)> = Vec::new();
     for (index, line) in lines[..header_end].iter().enumerate() {
+        if line
+            .chars()
+            .any(|character| character.is_control() && character != '\t')
+        {
+            errors.push(CompositionError::ControlCharacter(index + 1));
+        }
         if line.starts_with([' ', '\t']) {
             match raw_headers.last_mut() {
                 Some((_, value)) => {
@@ -148,6 +177,14 @@ pub fn parse_composition(bytes: &[u8]) -> ParsedComposition {
             .any(|(other, _)| other.eq_ignore_ascii_case(name));
         if first == Some(index) && repeated {
             errors.push(CompositionError::DuplicateHeader(name.clone()));
+        }
+        if first == Some(index) {
+            if let Some(rejected) = REJECTED_HEADERS
+                .iter()
+                .find(|rejected| rejected.eq_ignore_ascii_case(name))
+            {
+                errors.push(CompositionError::RejectedHeader(rejected));
+            }
         }
     }
 
@@ -305,6 +342,50 @@ mod tests {
                 "ERROR: there is no blank line between the header and the body.",
                 "ERROR: line 1 is not a valid header line.",
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_headers_that_change_what_the_article_does() {
+        assert_eq!(
+            errors(
+                "Newsgroups: a.b\nSubject: s\nFrom: u@example.com\ncontrol: cancel <x@y>\n\
+                 Supersedes: <x@y>\nApproved: m@example.com\nAlso-Control: x\nCancel-Key: k\n\nb\n"
+            ),
+            [
+                "ERROR: btrn does not send the \"Control:\" header.",
+                "ERROR: btrn does not send the \"Supersedes:\" header.",
+                "ERROR: btrn does not send the \"Approved:\" header.",
+                "ERROR: btrn does not send the \"Also-Control:\" header.",
+                "ERROR: btrn does not send the \"Cancel-Key:\" header.",
+            ]
+        );
+        assert_eq!(
+            errors(
+                "Newsgroups: a.b\nSubject: s\nFrom: u@example.com\nControl:\nApproved:  \n\nb\n"
+            ),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            errors(
+                "Newsgroups: a.b\nSubject: s\nFrom: u@example.com\nControl:\n  cancel <x@y>\n\nb\n"
+            ),
+            ["ERROR: btrn does not send the \"Control:\" header."]
+        );
+    }
+
+    #[test]
+    fn rejects_control_characters_in_header_lines() {
+        assert_eq!(
+            errors("Newsgroups: a.b\nSubject: s\rX-Bad: y\nFrom: u@example.com\nX-Esc: \u{1b}[2J\n\nb\u{0}\n"),
+            [
+                "ERROR: line 2 contains a control character.",
+                "ERROR: line 4 contains a control character.",
+            ]
+        );
+        assert_eq!(
+            errors("Newsgroups: a.b\nSubject:\ts\nFrom: u@example.com\r\n\nb\n"),
+            Vec::<String>::new()
         );
     }
 

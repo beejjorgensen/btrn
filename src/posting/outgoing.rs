@@ -8,17 +8,38 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const USER_AGENT: &str = "btrn";
 
-/// Headers btrn always sets itself; copies in the composition are ignored.
-const PROTECTED_HEADERS: [&str; 8] = [
+/// Headers btrn sets itself, or that only the server may add; copies in the
+/// composition are ignored. Every `Content-` header is ignored as well, since
+/// btrn fixes the article's MIME type.
+const PROTECTED_HEADERS: [&str; 16] = [
     "Message-ID",
     "Date",
     "Path",
     "User-Agent",
     "References",
+    "In-Reply-To",
     "MIME-Version",
-    "Content-Type",
-    "Content-Transfer-Encoding",
+    "Xref",
+    "Lines",
+    "Bytes",
+    "Injection-Info",
+    "Injection-Date",
+    "NNTP-Posting-Host",
+    "NNTP-Posting-Date",
+    "X-Trace",
+    "X-Complaints-To",
 ];
+
+/// Whether btrn drops a composition header named `name`.
+fn is_protected(name: &str) -> bool {
+    PROTECTED_HEADERS
+        .iter()
+        .chain(&ORDERED_HEADERS)
+        .any(|known| known.eq_ignore_ascii_case(name))
+        || name
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Content-"))
+}
 
 /// Headers that are emitted in a fixed position rather than passed through.
 const ORDERED_HEADERS: [&str; 4] = ["From", "Newsgroups", "Subject", "Followup-To"];
@@ -63,8 +84,7 @@ pub fn build_article(composition: &Composition, context: &OutgoingContext<'_>) -
     lines.push(format!("Message-ID: {}", context.message_id));
     lines.push(format!("Date: {}", context.date));
     for (name, value) in &composition.headers {
-        let fixed = |list: &[&str]| list.iter().any(|known| known.eq_ignore_ascii_case(name));
-        if !fixed(&PROTECTED_HEADERS) && !fixed(&ORDERED_HEADERS) {
+        if !is_protected(name) {
             lines.extend(unstructured_header(name, value));
         }
     }
@@ -214,6 +234,13 @@ mod tests {
              Keywords:\n\
              Message-ID: <forged@example.com>\n\
              X-Extra: kept\n\
+             xref: news.example comp.test:1\n\
+             Lines: 3\n\
+             In-Reply-To: <forged@example.com>\n\
+             Injection-Info: forged\n\
+             content-disposition: attachment\n\
+             Content-Language: en\n\
+             X-Content-Note: kept\n\
              \n\
              In article <a@b>, P wrote:\n\
              >quoted\n\
@@ -239,6 +266,7 @@ mod tests {
                 "Date: Sun, 22 Nov 2026 22:11:11 +0000",
                 "Organization: Yoyodyne Industries",
                 "X-Extra: kept",
+                "X-Content-Note: kept",
                 "User-Agent: btrn",
                 "MIME-Version: 1.0",
                 "Content-Type: text/plain; charset=utf-8",

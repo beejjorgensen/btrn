@@ -68,6 +68,51 @@ mod tests {
         assert_ne!(first, second);
     }
 
+    /// An encoded-word in the followed-up-on article decodes to line breaks;
+    /// they must not turn into headers of the followup.
+    #[test]
+    fn remote_encoded_line_breaks_never_become_posted_headers() {
+        use crate::model::article::RawArticle;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+
+        let subject = STANDARD.encode("hello\nControl: cancel <victim@example.com>");
+        let raw = [
+            "From: Poster <poster@example.com>".to_owned(),
+            "Newsgroups: comp.test".to_owned(),
+            format!("Subject: =?UTF-8?B?{subject}?="),
+            "Message-ID: <orig@example.com>".to_owned(),
+            String::new(),
+            "body".to_owned(),
+        ]
+        .map(String::into_bytes);
+        let decoded = crate::decoder::decode_article(&RawArticle::parse(&raw).article);
+        let identity = PostingIdentity {
+            display_name: None,
+            display_email: Some("me@example.com".to_owned()),
+            organization: None,
+        };
+        let draft = draft::compose_followup(&decoded, &identity);
+        let parsed = composition::parse_composition(draft.text.as_bytes());
+        assert_eq!(parsed.errors, []);
+        let posted = outgoing::build_article(
+            &parsed.composition,
+            &outgoing::OutgoingContext {
+                references: &draft.references,
+                message_id: "<new@example.com>",
+                date: "d",
+            },
+        );
+        let headers = posted
+            .iter()
+            .take_while(|line| !line.is_empty())
+            .map(|line| String::from_utf8_lossy(line).into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            headers.contains(&"Subject: Re: hello Control: cancel <victim@example.com>".to_owned())
+        );
+        assert!(!headers.iter().any(|line| line.starts_with("Control:")));
+    }
+
     #[test]
     fn blank_values_are_unset() {
         assert_eq!(nonblank(Some("  ")), None);

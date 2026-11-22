@@ -225,7 +225,14 @@ any headers that do not have values (or whose values are purely
 whitespace).
 
 Any other non-empty header the user entered, such as `Followup-To` or
-`Keywords`, is posted as written.
+`Keywords`, is posted as written, except the protected and rejected
+headers below.
+
+Header values copied into the composition file from the followed-up-on
+article (`Newsgroups`, `Subject`) or from the configuration have every
+control character, including line breaks, replaced with a space. Decoded
+RFC 2047 text can contain line breaks, and without this a remote article
+could add header lines, such as `Control: cancel`, to the followup.
 
 Proper NNTP headers must be produced:
 
@@ -246,10 +253,18 @@ If the organization is specified in the composition file, include an
 Organization: Yoyodyne Industries
 ```
 
-btrn always sets these headers itself, replacing any the user entered:
-`Message-ID`, `Date`, `Path`, `User-Agent`, `References`,
-`MIME-Version`, `Content-Type`, and `Content-Transfer-Encoding`. `Path`
-is left for the server to add.
+btrn always sets these headers itself, or leaves them for the server to
+add, and silently drops any the user entered: `Message-ID`, `Date`,
+`Path`, `User-Agent`, `References`, `In-Reply-To`, `MIME-Version`, every
+header whose name begins with `Content-`, and the server-added `Xref`,
+`Lines`, `Bytes`, `Injection-Info`, `Injection-Date`,
+`NNTP-Posting-Host`, `NNTP-Posting-Date`, `X-Trace`, and
+`X-Complaints-To`. `Path` is left for the server to add.
+
+Headers that change what the article does rather than what it says are
+rejected by the header check instead: `Control`, `Also-Control`,
+`Supersedes`, `Approved`, and `Cancel-Key`. btrn does not send control
+messages, cancels, supersedes, or moderator approvals.
 
 The posted headers are written in this order: `From`, `Newsgroups`,
 `Subject`, `Followup-To` (if any), `References` (if any), `Message-ID`,
@@ -316,6 +331,9 @@ The composition is checked for correctness and completeness:
 * `From` is present and parses as an address.
 * Every header line has a valid `Name:` form, and no header appears more
   than once.
+* No header line contains a control character other than tab.
+* No rejected header (`Control`, `Also-Control`, `Supersedes`,
+  `Approved`, `Cancel-Key`) has a value.
 * A blank line separates the headers from the body.
 * No header or body line exceeds 998 bytes, excluding the line ending.
 * The body is valid UTF-8.
@@ -329,6 +347,8 @@ ERROR: the "Newsgroups:" line is missing from the header.
 ERROR: the "Subject:" line is missing from the header.
 ERROR: the "From:" line does not contain a valid address.
 ERROR: the "Date:" line appears more than once.
+ERROR: btrn does not send the "Control:" header.
+ERROR: line 3 contains a control character.
 ERROR: line 14 is longer than 998 bytes.
 ERROR: the article body is not valid UTF-8.
 
