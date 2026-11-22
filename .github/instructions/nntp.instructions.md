@@ -2,9 +2,8 @@
 description: "Use when implementing or testing NNTP transport, wire parsing, XOVER/overview, authentication, greetings, capabilities, article HEAD/BODY/ARTICLE retrieval, or fake NNTP servers."
 applyTo:
   - "src/nntp/**"
-  - "src/protocol/**"
-  - "tests/**/*nntp*"
-  - "tests/fixtures/**/*"
+  - "src/group_loader.rs"
+  - "tests/fixtures/nntp/**"
 ---
 
 # NNTP implementation rules
@@ -19,8 +18,9 @@ applyTo:
 - Parse `GROUP` success responses into typed selections; retain server ranges when the reported count disagrees, and treat `411` as an explicit unknown-group failure.
 - Parse `CAPABILITIES` into typed capabilities and prefer `XOVER` over `OVER` when both are advertised. Use the standard overview format only when the server does not provide one.
 - Parse overview rows by the server-provided field order; preserve article numbers when optional fields are malformed, keep unknown/malformed field bytes for diagnostics, ignore out-of-range rows, and resolve duplicate numbers to the last complete row.
-- Plan initial overview requests from the group's unread newsrc article-number ranges, bounded by `initial_overview_limit` and split into requests no larger than `overview_chunk_size`.
-- Retrieve headers with `HEAD` and bodies with `BODY`; preserve response bytes and distinguish `423`/`430` article-not-found statuses from transport and unexpected-status failures.
+- Plan overview requests from the group's newsrc ranges: the newest unread articles up to `initial_overview_limit` plus the newest read articles up to `context_overview_limit`. Join touching ranges before splitting into requests no larger than `overview_chunk_size`, and build the thread tree once per group load. Read-context rows never change read state.
+- Retrieve headers with `HEAD` and bodies with `BODY`; preserve response bytes and distinguish `423`/`430` article-not-found statuses from transport and unexpected-status failures. `HEAD <message-id>` returns article number `0`; take the group article number from `Xref`.
+- Never retry `POST` automatically; posting rules are in the posting instructions.
 - When credentials are explicitly configured, authenticate with `AUTHINFO USER`; send `AUTHINFO PASS` only after `381`, and treat `281` after either step as success. Do not retain response text or credentials in authentication errors.
 - Never put passwords or authentication arguments in logs or errors.
 - When reconnect/retry behavior is implemented, reconnect once after transport loss and retry temporary `4xx` or `480` authentication challenges at most once. Tests for operations that do not exercise retry behavior need not cover these cases.

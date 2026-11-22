@@ -18,6 +18,21 @@ the linked documents in [docs/](docs/).
 - Use the server article number and group for newsrc state. Never persist article bodies, overview rows, headers, or thread structures (except the temporary posting composition file).
 - Keep the full specification in `docs/`, not in always-loaded agent instructions.
 
+## Subsystem rules
+
+Before editing files matching a path below, read its rules file. Copilot applies
+these automatically through `applyTo`; other agents should open them by hand.
+Skills live in `.github/skills/` (also reachable as `.claude/skills/`).
+
+| Paths | Rules | Skill |
+| --- | --- | --- |
+| `src/nntp/**`, `src/group_loader.rs`, `tests/fixtures/nntp/**` | [nntp](.github/instructions/nntp.instructions.md) | `nntp-fixtures` |
+| `src/model/**`, `src/thread/**`, `src/state/**`, `src/decoder/**` | [model](.github/instructions/model.instructions.md) | |
+| `src/terminal/**`, `src/main.rs`, `src/cli.rs` | [terminal](.github/instructions/terminal.instructions.md) | `terminal-state-testing` |
+| `src/persistence/**`, `src/config.rs` | [persistence](.github/instructions/persistence.instructions.md) | `newsrc-state` |
+| `src/posting/**`, `src/nntp/post.rs`, `src/terminal/posting.rs` | [posting](.github/instructions/posting.instructions.md) | |
+| `docs/**`, `AGENTS.md`, `CLAUDE.md`, `.github/instructions/**`, `.github/skills/**` | [docs](.github/instructions/docs.instructions.md) | |
+
 ## Rust conventions
 
 - Format Rust with `cargo fmt`.
@@ -31,10 +46,13 @@ the linked documents in [docs/](docs/).
 
 - Aim for roughly 60% protocol/model/decoder tests, 25% terminal state and snapshot tests, and 15% critical pseudo-terminal end-to-end journeys. Treat these proportions as a planning guide, not a required test-count target.
 
-Use the fake-server protocol fixtures for broad coverage. Reserve real pseudo-terminal automation for authentication, group/thread navigation, unresolved parents, resize, quit/newsrc, and reopen/read-range journeys.
+Use the fake-server protocol fixtures for broad coverage. Reserve real
+pseudo-terminal automation for the critical journeys listed in
+[docs/testing.md](docs/testing.md#critical-e2e-journeys--planned).
 
 ## Before finishing
 
 - Inspect the diff for unintended files or unrelated changes.
 - Run `cargo fmt --check` and the relevant Cargo test targets.
+- If behavior, rules, or docs changed, update the doc that owns the fact (see the [docs rules](.github/instructions/docs.instructions.md)) and run `python3 scripts/check-docs.py`.
 - Report validation failures explicitly with commands and concise failure details.

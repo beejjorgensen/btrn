@@ -10,15 +10,7 @@ description: "Test btrn terminal state, key dispatch, pagination, rendering snap
 1. Implement or exercise named operations and screen transitions before terminal rendering.
 2. Add state-transition tests for key dispatch, pagination, resize, marking, and article navigation.
 3. Add representative snapshot tests for only meaningful layouts or inverse rendering states.
-4. Use a pseudo-terminal only for critical journeys:
-   - authentication
-   - marked groups
-   - large-group pagination
-   - thread/article navigation
-   - unresolved `(?)`
-   - resize
-   - quit and newsrc
-   - reopen/read ranges
+4. Use a pseudo-terminal only for the critical journeys in the [testing specification](../../../docs/testing.md#critical-e2e-journeys--planned).
 5. Assert text and inverse state where practical; keep snapshots deterministic.
 6. Run narrow state/snapshot tests before pseudo-terminal journeys.
 

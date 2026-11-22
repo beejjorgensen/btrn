@@ -11,15 +11,14 @@
 - [Screen specification](screens.md) describes terminal layouts and interactions.
 - [Runtime and commands](runtime.md) defines command dispatch and lifecycle behavior.
 - [Testing](testing.md) defines test layers and critical journeys.
-- Use the subsystem instructions and skills for implementation guidance:
-  - NNTP protocol and wire fixtures
-  - Terminal state and snapshot/E2E testing
-  - Newsrc parsing and persistence
+- Agent rules for each source path, and the skills, are listed in the
+  "Subsystem rules" table in [AGENTS.md](../AGENTS.md#subsystem-rules).
 
 Section status labels describe implementation progress:
 
 - **Implemented**: substantially matches current code.
 - **In progress**: partially implemented or has known gaps.
 - **Planned**: specified as a target but not implemented yet.
+- **not binding**: rationale or open questions; never a requirement.
 
 The specifications in this directory are reference material. Agent instructions remain concise and subsystem-specific.

@@ -31,14 +31,14 @@ E2E testing should be feasible and valuable, but it should be layered so that te
 
 ### Critical E2E Journeys — Planned
 
-The initial full-terminal E2E suite should cover:
+This is the only list of pseudo-terminal journeys; agent instructions and skills link here. The initial full-terminal E2E suite should cover:
 
 * first launch and authentication;
 * selecting and marking multiple groups;
 * entering a large group;
 * navigating a paginated thread list;
 * opening an article and moving through its thread;
-* unresolved-parent and `(?)` behavior;
+* placeholder `(?)` parents, and moving to a parent with `[` when it is loaded, fetched by Message-ID, or no longer on the server;
 * terminal resize;
 * quitting and verifying newsrc updates;
 * reopening and confirming read ranges.
@@ -47,8 +47,4 @@ State operations and key handling must not require a live socket or terminal. Pr
 
 Do not test every protocol or rendering combination through the full terminal. Use unit, fixture, and state tests for breadth, and reserve pseudo-terminal E2E tests for a few high-value journeys.
 
-A reasonable initial coverage balance is:
-
-* roughly 60% protocol/model/decoder tests;
-* roughly 25% terminal state and snapshot tests;
-* roughly 15% end-to-end pseudo-terminal journeys.
+The intended balance between these layers is in [AGENTS.md](../AGENTS.md#approximate-testing-balance).

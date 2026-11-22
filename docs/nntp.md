@@ -195,21 +195,6 @@ For the initial implementation:
 * build the thread tree once, after every chunk of a group load has arrived;
 * never infer that articles outside the loaded range are read; they are simply not loaded.
 
-Range sizes have these tradeoffs:
-
-* **Entire unread range**
-  * Pros: complete thread construction and navigation are available immediately; no lazy-loading surprises.
-  * Cons: can be extremely slow and memory-heavy for active groups, can exceed the multiline response limit, and can delay startup for days or weeks.
-* **Small range, such as 100–500 articles**
-  * Pros: very fast startup and low memory use.
-  * Cons: usually splits threads, hides many unread subjects, and requires frequent network operations while paging.
-* **Medium range, such as 1,000–10,000 articles**
-  * Pros: small enough for bounded startup work while usually covering a useful amount of recent activity; 10,000 rows fit the initial 16 MiB response limit in ordinary overview responses.
-  * Cons: still insufficient for unusual or high-volume groups; threads may extend outside the range and may need additional metadata.
-* **Time-based range**
-  * Pros: avoids server numbering range issues and gives a predictable recent history.
-  * Cons: requires parsing dates and sorting overview rows, and a slow or irregular server may have no usable overview date for some rows.
-
 The recommended default is `10,000` newest unread articles, requested in `1,000`-article chunks. This is a compromise that bounds startup, supports practical thread pages, and can be expanded or loaded older as the user navigates. Article numbers in a group are not assumed to be continuous; unavailable articles are skipped, and a requested range may return fewer rows.
 
 Retrieve full metadata or bodies with `HEAD`, `BODY`, or `ARTICLE`.
@@ -232,9 +217,11 @@ Raw article headers and bodies remain byte-preserving protocol data until the
 decoder boundary. Parsing and MIME/charset rules are specified in
 [decoding.md](./decoding.md).
 
-### Failure Policy — Planned
+### Failure Policy — In progress
 
-Protocol operations should report typed failures:
+Typed failures are implemented per operation (`ProtocolError`, `AuthenticationError`, `GroupSelectionError`, `OverviewError`, `ArticleError`, and `PostError` in `src/nntp/`). Reconnect and retry are not implemented yet.
+
+The failures fall into these categories:
 
 * `TransportError`: connect, TLS, socket read/write, timeout, or abrupt close;
 * `ProtocolError`: malformed status, invalid multiline framing, or oversized data;
@@ -293,16 +280,13 @@ The NNTP session should own:
 * an operation/result command sequence;
 * the last protocol error.
 
-The session should expose operations with explicit enter/leave semantics:
+The session (`NntpSession` in `src/nntp/mod.rs`) exposes one method per operation, each returning a typed result:
 
-* `connect`;
-* `disconnect`;
-* `list_active_groups`;
-* `select_group`;
-* `list_overview`;
-* `fetch_headers`;
-* `fetch_body`;
-* `fetch_article`.
+* `connect`, `mode_reader`, `discover_capabilities`, `authenticate`;
+* `list_active`, `group_posting_status`, `select_group`;
+* `overview_format`, `list_overview`;
+* `article_headers`, `article_body`, `article_headers_by_id`;
+* `post`.
 
 Async implementation is deferred. A synchronous implementation may block for bounded network operations. Tokio or another asynchronous runtime may be adopted only if it becomes necessary for terminal responsiveness or concurrent I/O.
 
@@ -355,3 +339,22 @@ The protocol implementation should include fixtures for successful and malformed
 * article head/body;
 * dot-stuffed multiline data;
 * timeout and disconnect.
+
+## Rationale — not binding
+
+Background for decisions above. Nothing here is a requirement.
+
+### Overview range size
+
+* **Entire unread range**
+  * Pros: complete thread construction and navigation are available immediately; no lazy-loading surprises.
+  * Cons: can be extremely slow and memory-heavy for active groups, can exceed the multiline response limit, and can delay startup for days or weeks.
+* **Small range, such as 100–500 articles**
+  * Pros: very fast startup and low memory use.
+  * Cons: usually splits threads, hides many unread subjects, and requires frequent network operations while paging.
+* **Medium range, such as 1,000–10,000 articles**
+  * Pros: small enough for bounded startup work while usually covering a useful amount of recent activity; 10,000 rows fit the initial 16 MiB response limit in ordinary overview responses.
+  * Cons: still insufficient for unusual or high-volume groups; threads may extend outside the range and may need additional metadata.
+* **Time-based range**
+  * Pros: avoids server numbering range issues and gives a predictable recent history.
+  * Cons: requires parsing dates and sorting overview rows, and a slow or irregular server may have no usable overview date for some rows.

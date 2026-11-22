@@ -2,10 +2,6 @@
 
 Status labels are defined in the [documentation index](./README.md).
 
-## Async? — Planned
-
-This is an open question. We should discuss pros and cons.
-
 ## Command and Feature Expansion — In progress
 
 Key commands and interactive features will expand substantially over
@@ -46,10 +42,10 @@ rendering code.
   a real terminal or network connection.
 
 
-## Screen Specification — In progress
+## CLI and Headless Selector Models — In progress
 
-The terminal screen layouts and interactions are specified in
-[screens.md](./screens.md).
+Interactive layouts and keys, including the multi-group reading run and `q`
+and `Esc` on each screen, are specified only in [screens.md](./screens.md).
 
 The headless group-selector model is derived from `LIST ACTIVE` results and
 `NewsrcState`. It sorts groups by name, distinguishes subscribed,
@@ -58,37 +54,34 @@ separate from persisted subscription state. Cursor movement clamps at either
 end, and marked group names are returned in display order. It does not perform
 network requests or terminal rendering.
 
-`--interactive` without `--group` displays the paginated newsgroup selector.
-Space advances through pages until a group is marked or the last page is
-reached; marked groups are read in display order, or all groups are read when
-Space is pressed on the last page with no marks. `q` exits from the newsgroup
-selector. `--interactive
---group <name>` continues to open the thread selector directly.
-In a multi-group reading run, `q` on the thread list finishes the current group
-and opens the next selected group; after the selected groups are finished, the
-newsgroup selector is shown again. `Esc` ends the application. With a single
-explicit `--group`, `q` exits to the shell as before.
-The selector lists subscribed groups with a nonzero unread-article estimate
-from the active article-number range and newsrc read ranges. Both selectors
-assign letters and digits, excluding reserved `q`; the thread selector displays
-only unread articles, and article navigation skips already-read articles.
+Command-line entry points:
 
-The non-interactive `--group` command loads the configured newest-unread
-overview chunks into `SessionState`, builds the headless thread list, and prints
-thread summaries with unread counts. `--flat` retains the article-number and
-subject listing for inspecting individual overview rows. The fetch/parse/model
-flow is testable against the fake NNTP server without a live terminal.
-`--group <name> --thread-root <number>` opens the first unread article in a
-loaded thread, falling back to its first article when all are read. It reports
-an explicit error if the requested root is outside the configured overview
-window. The selected article follows the normal fetch, decode, render, and
-post-flush read-marking flow; navigation alone never marks it read.
+* `--interactive` opens the newsgroup selector; `--interactive --group <name>`
+  opens that group's thread selector directly, and `q` there exits to the
+  shell.
+* `--group <name>` without `--interactive` loads the group's overview chunks
+  (see [nntp.md](./nntp.md)) into `SessionState`, builds the headless thread
+  list, and prints thread summaries with unread counts. `--flat` prints the
+  article number and subject of each overview row instead.
+* `--group <name> --thread-root <number>` opens the first unread article in a
+  loaded thread, falling back to its first article when all are read. It
+  reports an explicit error if the requested root is outside the loaded
+  overview window. The selected article follows the normal fetch, decode,
+  render, and post-flush read-marking flow; navigation alone never marks it
+  read.
+
+These flows are testable against the fake NNTP server without a live terminal.
 
 ## Multiple instances — Planned
 
-Disallow multiple instances of trn running at once for now.
+Disallow multiple instances of btrn running at once for now.
 
 ## Posting and Editor — Implemented
 
 See [posting.md](./posting.md) and [environment.md](./environment.md).
 
+## Open questions — not binding
+
+* Whether to adopt an asynchronous runtime. The current rule is in
+  [AGENTS.md](../AGENTS.md): stay synchronous until terminal responsiveness
+  or concurrent I/O requires otherwise.

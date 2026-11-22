@@ -7,12 +7,7 @@ State and snapshots:
 - Thread fitting, overflow, and truncation
 - Reserved-key and letter collision resolution
 - Previous/current article inverse rendering
-- Unresolved-parent `(?)` rendering
+- Placeholder `(?)` rendering and parent navigation with `[`
 
-Pseudo-terminal journeys:
-
-- first launch/authentication
-- marked groups and first thread
-- article navigation
-- resize and quit/reopen
-- verify read ranges persisted and reused
+Pseudo-terminal journeys are listed only in the
+[testing specification](../../../../docs/testing.md#critical-e2e-journeys--planned).

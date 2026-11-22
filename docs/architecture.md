@@ -6,33 +6,24 @@ Status labels are defined in the [documentation index](./README.md).
 
 ## Goals
 
-- Keep NNTP transport, protocol parsing, MIME/charset decoding, model/state,
-  persistence, threading, and terminal rendering in separate modules.
-- NNTP and protocol code must not depend on Crossterm or terminal state.
-- Rendering code must not open sockets or read files.
-- Prefer small, explicit types and ordinary functions over speculative
-  abstractions.
-- Apply bounded network timeouts and preserve raw article bytes until decoding.
-- Mark articles read only after presentation or through an explicit mark-read
-  operation.
-- Use the server article number and group as the scope of newsrc state.
-- Keep article bodies and thread structures out of persistent storage.
-
-The detailed goals and command-dispatch requirements remain in
-[runtime.md](./runtime.md).
+The rules that apply to every change (module separation, privacy, timeouts,
+read marking, and what may be persisted) are in [AGENTS.md](../AGENTS.md).
+They are not repeated here.
 
 ## Module boundaries
 
-- `NNTP protocol`: network I/O, command and response parsing, capabilities,
-  authentication, and typed protocol failures.
-- `Model`: groups, articles, threads, read state, session operations, and
-  navigation.
-- `Persistence`: configuration and newsrc parsing/writing.
-- `Decoder`: MIME, content-transfer encodings, charsets, and text normalization.
-- `Rendering`: terminal layout, key-to-operation mapping, and screen state.
-
-Protocol types must not implement terminal rendering. Rendering code must not
-read or write files or directly issue NNTP commands.
+| Module | Path | Responsibility |
+| --- | --- | --- |
+| NNTP protocol | `src/nntp/` | Network I/O, command and response parsing, capabilities, authentication, `POST`, and typed protocol failures. |
+| Group loading | `src/group_loader.rs` | Plans overview requests from newsrc and feeds the rows into session state. |
+| Model | `src/model/` | Raw articles, header parsing, Message-IDs, and article metadata. |
+| Threading | `src/thread/` | The thread tree, including placeholders for missing parents. |
+| State | `src/state/` | Session state, read state, thread list, navigation, and the hierarchy grid. |
+| Decoder | `src/decoder/` | MIME, content-transfer encodings, charsets, and text normalization. |
+| Persistence | `src/persistence/`, `src/config.rs` | Configuration and newsrc parsing/writing. |
+| Posting | `src/posting/` | Composition file, editor hand-off, header checks, and outgoing articles. |
+| Rendering | `src/terminal/` | Terminal layout, key-to-operation mapping, and screen loops. |
+| CLI | `src/main.rs`, `src/cli.rs` | Argument handling and wiring the modules together. |
 
 ## Specifications
 
@@ -49,8 +40,8 @@ read or write files or directly issue NNTP commands.
   checks, and sending.
 - [Terminal screens](./screens.md): selector and article-view layouts,
   interactions, and key bindings.
-- [Runtime and commands](./runtime.md): asynchronous implementation questions,
-  command dispatch, CLI behavior, editor, and instance lifecycle.
+- [Runtime and commands](./runtime.md): command dispatch, CLI entry points,
+  instance lifecycle, and open questions.
 - [Testing](./testing.md): fixture strategy, test layers, and critical
   pseudo-terminal journeys.
 

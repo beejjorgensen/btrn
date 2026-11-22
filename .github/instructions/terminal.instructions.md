@@ -2,10 +2,8 @@
 description: "Use when implementing terminal rendering, Crossterm input, key bindings, screen state, layouts, pagination, snapshots, or pseudo-terminal end-to-end tests."
 applyTo:
   - "src/terminal/**"
-  - "src/ui/**"
-  - "src/screens/**"
-  - "tests/**/*terminal*"
-  - "tests/**/*snapshot*"
+  - "src/main.rs"
+  - "src/cli.rs"
 ---
 
 # Terminal implementation rules
@@ -18,6 +16,7 @@ applyTo:
 - Generated selection letters must coexist with reserved keys without scattering checks through renderers.
 - Page data is derived layout state and must refresh after terminal resize.
 - The currently presented article is fully inverse in the thread hierarchy; previously viewed articles invert only their numbers.
-- Append `(?)` only to unresolved-parent hierarchy entries.
-- Mark an article read only after its complete article view has been rendered and flushed successfully.
-- Keep pseudo-terminal coverage limited to the critical journeys defined in [testing specification](../../docs/testing.md).
+- Draw thread placeholders as `(?)` cells joined like other nodes; a placeholder has no subject number and is never highlighted (see [screens](../../docs/screens.md#thread-hierarchy--implemented)).
+- Mark an article read only after its first page has been rendered and flushed successfully; paging, redraw, and resize never change read state.
+- Keep pseudo-terminal coverage limited to the critical journeys defined in [testing specification](../../docs/testing.md#critical-e2e-journeys--planned).
+- Screen layouts and key bindings are specified in [screens](../../docs/screens.md).

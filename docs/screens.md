@@ -175,7 +175,8 @@ Keys:
 
 * letter: toggle the corresponding thread's mark
 * `q`: return to the newsgroup selector (or, in a multi-group reading run,
-  finish this group and continue to the next selected group)
+  finish this group and continue to the next selected group; after the last
+  one, the newsgroup selector is shown again)
 * `Esc`: quit the app, including from a multi-group reading run
 * `>`: advance to the next page; do nothing on the last page
 * `<`: go to the previous page
@@ -293,10 +294,8 @@ Keys:
   [model.md](./model.md)). If the server no longer has it, the prompt is
   followed by `Parent article is not available.` until the next redraw. On
   a thread root, `[` does nothing.
-* `F`: post a followup (see [posting.md](./posting.md))
+* `F`: post a followup that quotes this article (see [posting.md](./posting.md))
 * Ctrl-C: exit the program (on every screen), saving newsrc
-* `F`: Post a follow-up article to this one, quoting the original text.
-  See the `posting.md` document.
 
 ## Thread Hierarchy — Implemented
 

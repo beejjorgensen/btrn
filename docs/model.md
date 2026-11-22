@@ -9,48 +9,51 @@ The core model should describe content and state independently of NNTP protocol 
 Effective configuration and persistent newsrc storage are defined in
 [persistence.md](./persistence.md).
 
-### Group — In progress
+### Current types — Implemented
 
-`Group` represents a newsgroup known to a server.
+These are the types the code has today. Prefer extending them over adding the
+planned types below.
 
-* `name`: canonical newsgroup name.
-* `first_article`: lowest article number reported by the server.
-* `last_article`: highest article number reported by the server.
-* `posting_status`: posting availability reported by the server.
-* `subscription`: whether the newsgroup is subscribed.
-* `read_ranges`: ranges of server article numbers already read.
+| Type | Path | Holds |
+| --- | --- | --- |
+| `GroupSelection` | `src/nntp/group.rs` | A `GROUP` result: name, count, first and last article numbers. |
+| `RawArticle` | `src/model/article.rs` | Header fields and body lines as bytes, as received. |
+| `MessageId` | `src/model/article.rs` | A normalized Message-ID, without angle brackets. |
+| `ArticleMetadata` | `src/model/article.rs` | Message-ID, `References`, `In-Reply-To`, raw `From`/`Subject`/`Date`, and parse issues. Built from overview rows or headers. |
+| `LoadedArticle` | `src/state/mod.rs` | An `ArticleMetadata` with its server article number. |
+| `ThreadTree` | `src/thread/mod.rs` | Article nodes, placeholder nodes (`MissingNode`), ordered roots, and `ThreadIssue` diagnostics. Nodes are addressed by `ThreadRef::{Article(u64), Missing(MessageId)}`. |
+| `GroupState` | `src/state/mod.rs` | One loaded group: metadata by article number and its `ThreadTree`. |
+| `SessionState` | `src/state/mod.rs` | `NewsrcState` plus loaded groups by name. |
+| `ThreadList`, `ThreadRow` | `src/state/thread_list.rs` | The headless thread-selector view model. |
+| `ArticleNavigation` | `src/state/article_navigation.rs` | The article order of one thread and the current position. |
+| `DecodedArticle` | `src/decoder/mod.rs` | Display headers and body text after MIME and charset decoding. |
 
-The newsrc subscription status and server article-number ranges are distinct. Article numbers are server-local and may differ between servers or later change as articles expire.
+Decoded article bodies exist only while an article is displayed; they are not
+stored in `SessionState`.
 
-### Article — In progress
+### Planned types — Planned
 
-`Article` is the stable, application-level representation of an article.
+These describe the intended direction, not code to write now. Add a field only
+when a feature needs it.
 
-* `message_id`: the globally unique RFC `Message-ID`, without the surrounding angle brackets.
-* `subject`: decoded subject text.
-* `from`: decoded author value.
-* `date`: parsed article date and UTC offset when available.
-* `references`: ordered `Message-ID` values from the `References` header.
-* `in_reply_to`: optional `In-Reply-To` value.
-* `headers`: filtered headers selected for display.
-* `body`: decoded MIME text selected for display.
-* `server_number`: article number in the currently selected server group, if known.
-* `group_name`: the group containing this server number, if known.
-* `read`: whether the article has been read.
+* `Group`: a server group with posting status, subscription, and read ranges
+  copied from `NewsrcState`. Today this is split between `GroupSelection`,
+  `LIST ACTIVE` results, and `NewsrcState`.
+* `Article`: decoded subject, author, parsed date and UTC offset, filtered
+  headers, and decoded body for display, with its server number and group.
+  A single article may have server numbers in multiple groups. It must not be
+  identified only by subject, server article number, or a source-specific
+  cache key.
+* `SessionState` additions: server capabilities, the active screen and
+  selections, pagination, terminal size, and the single-instance lock. Today
+  screen state lives in the terminal module (for example `ReaderState` in
+  `src/terminal/reader.rs`).
 
-A single article may have server numbers in multiple groups. It should not be identified only by `subject`, server article number, or a source-specific cache key.
+The model should preserve raw article data long enough to support decoding and
+diagnostics, but normal UI code should consume normalized text and structured
+headers.
 
-The model should preserve raw article data long enough to support decoding and diagnostics, but normal UI code should consume normalized text and structured headers.
-
-### Thread — In progress
-
-`Thread` represents a hierarchy of articles connected by RFC references.
-
-* `root`: the root article in the thread.
-* `articles`: all known articles in the thread.
-* `subject`: display subject chosen from the root or earliest displayed article.
-* `unread_count`: number of unread articles.
-* `newest_date`: newest known article date.
+### Threads — Implemented
 
 Article relationships should be built from `Message-ID`, `References`, and optionally `In-Reply-To`. Use the last valid `References` ID as the parent candidate, falling back to `In-Reply-To` only when `References` is empty. Subject lines must not create parent-child relationships. Missing, duplicate, cyclic, orphaned, and malformed references require a deterministic fallback; an article with no valid relationship becomes a thread root. Resolve duplicate Message-IDs to the article with the lowest server article number and report the duplicate. Break cycles by removing the parent edge from the highest article number in the cycle. Unresolved parent IDs are kept on the article as diagnostics.
 
@@ -114,33 +117,9 @@ does not mutate read state.
 Persistent subscription and read-range state is specified in
 [persistence.md](./persistence.md). The model consumes it but does not own it.
 
-### SessionState — In progress
+### Session operations — In progress
 
-`SessionState` describes the in-memory state of one running application instance.
-
-* `config`: effective configuration.
-* `server_capabilities`: protocol capabilities discovered from the server.
-* `groups`: known groups and their subscription/read state.
-* `articles`: articles known to the current session, retained only in memory.
-* `threads`: threads built from known articles, retained only in memory.
-* `active_screen`: group selector, thread selector, or article view.
-* `selected_group`: current group selector or thread selector context.
-* `selected_thread`: current thread context.
-* `selected_article`: article currently shown.
-* `pagination`: page state derived from terminal dimensions.
-* `layout_width`, `layout_height`: current terminal size.
-* `instance_lock`: result of the single-instance lock attempt.
-
-Session state should be changed through explicit operations rather than directly by protocol or rendering code. Loading overview metadata updates the in-memory group/article/thread view but never updates read ranges. Marking an article read is a separate explicit operation keyed by group and server article number; it preserves an existing subscription marker and creates a new entry as unsubscribed rather than implicitly subscribing a group. Suggested operations include:
-
-* `connect`, `disconnect`
-* `subscribe_group`, `unsubscribe_group`
-* `load_group_range`
-* `load_article`
-* `mark_article_read`, `mark_thread_read`
-* `select_next_article`, `select_previous_article`
-* `resize_layout`
-* `save_newsrc`
+Session state should be changed through explicit operations rather than directly by protocol or rendering code. Loading overview metadata updates the in-memory group/article/thread view but never updates read ranges. Marking an article read is a separate explicit operation keyed by group and server article number; it preserves an existing subscription marker and creates a new entry as unsubscribed rather than implicitly subscribing a group. Current operations include `SessionState::load_overview`, `load_articles`, and `mark_article_read`, and `group_loader::load_group_threads`. Planned ones include subscribing and unsubscribing, marking a whole thread read, and loading older ranges.
 
 Article and thread objects must not be written to disk. The newsrc file is the only article-related persistent state and stores subscription and read ranges only. Article bodies, decoded text, headers, overview rows, and thread structures are discarded when the application instance exits.
 
@@ -171,19 +150,6 @@ The intended ownership is:
 
 * `Config` provides settings and resolved credentials.
 * `NewsrcState` owns persisted subscription and read-range state.
-* `SessionState` owns runtime state and references model objects.
-* `Group` owns its subscription and server range, but read ranges are copied or synchronized from `NewsrcState`.
-* `Article` owns article content and references.
-* `Thread` owns relationships among known articles.
-
-### Module Boundaries — Implemented
-
-Implementations should preserve these boundaries:
-
-* NNTP protocol: network I/O, command parsing, capability/auth state, and server response types.
-* Model: groups, articles, threads, read state, and session operations.
-* Persistence: config and newsrc parsing/writing.
-* Rendering: terminal layout and key-to-operation mapping.
-* Decoder: MIME, content-transfer encoding, charsets, and text normalization.
-
-Protocol types should not implement terminal rendering. Rendering code should not read or write files or directly issue NNTP commands.
+* `SessionState` owns `NewsrcState` and the loaded groups.
+* `GroupState` owns a loaded group's metadata and its `ThreadTree`.
+* `ThreadTree` owns relationships among loaded articles and placeholders.

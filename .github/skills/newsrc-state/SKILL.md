@@ -5,15 +5,16 @@ description: "Implement or test newsrc parsing, subscriptions, read ranges, atom
 
 # Newsrc state workflow
 
+The rules are in the
+[persistence instructions](../../instructions/persistence.instructions.md);
+this skill is the working procedure.
+
 ## Procedure
 
 1. Parse subscription markers separately from read ranges.
-2. Distinguish missing entries, subscribed `:`, and unsubscribed `!`.
-3. Normalize reversed, duplicate, out-of-order, open-ended, and malformed ranges without corrupting state.
-4. Keep read ranges keyed by canonical group name.
-5. Synchronize group read state from newsrc state using server article numbers.
-6. Write atomically and preserve unrelated data/comments only if round-trip behavior is intentionally supported.
-7. Test malformed input and range normalization without a live server or terminal.
+2. Change range handling through the normalizer and the overview planners in `src/persistence/newsrc.rs`; do not normalize ranges elsewhere.
+3. Synchronize group read state from newsrc state using server article numbers.
+4. Test each case in the [newsrc checklist](./references/checklist.md) that the change touches, without a live server or terminal.
+5. When changing overview planning, also run the fake-server tests in `src/group_loader.rs`.
 
-Use [newsrc checklist](./references/checklist.md) and
-[persistence specification](../../../docs/persistence.md).
+See the [persistence specification](../../../docs/persistence.md).

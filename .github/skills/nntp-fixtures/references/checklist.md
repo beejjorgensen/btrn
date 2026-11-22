@@ -12,4 +12,6 @@
 - oversized line and 16 MiB response behavior
 - missing terminator and malformed framing
 - `HEAD`, `BODY`, and `ARTICLE`
+- `HEAD <message-id>` with `Xref`, and `430` for an expired parent
+- overview plans that join read-context and unread ranges
 - `423`, `430`, abrupt close, timeout, and reconnect
