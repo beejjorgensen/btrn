@@ -182,6 +182,8 @@ pub fn normalize_ranges(mut ranges: Vec<ArticleRange>) -> Vec<ArticleRange> {
     normalized
 }
 
+/// Overview chunks covering the `unread_limit` highest-numbered unread
+/// articles in the active range `first_article..=last_article`.
 pub fn plan_unread_chunks(
     first_article: u64,
     last_article: u64,
@@ -189,27 +191,79 @@ pub fn plan_unread_chunks(
     unread_limit: usize,
     chunk_size: usize,
 ) -> Vec<ArticleRange> {
-    if first_article == 0 || last_article < first_article || unread_limit == 0 || chunk_size == 0 {
+    if chunk_size == 0 {
         return Vec::new();
     }
+    chunk_ranges(
+        unread_spans(first_article, last_article, read_ranges, unread_limit),
+        chunk_size,
+    )
+}
 
-    let read = normalize_ranges(read_ranges.to_vec())
-        .into_iter()
-        .filter_map(|range| {
-            let first = range.first.max(first_article);
-            let last = range.last.min(last_article);
-            (first <= last).then_some(ArticleRange { first, last })
-        })
-        .collect::<Vec<_>>();
+/// Overview chunks covering the `context_limit` highest-numbered read
+/// articles in the active range. Their metadata gives already-read parents
+/// and siblings to the thread tree without changing any read state.
+pub fn plan_read_context_chunks(
+    first_article: u64,
+    last_article: u64,
+    read_ranges: &[ArticleRange],
+    context_limit: usize,
+    chunk_size: usize,
+) -> Vec<ArticleRange> {
+    if chunk_size == 0 {
+        return Vec::new();
+    }
+    chunk_ranges(
+        read_context_spans(first_article, last_article, read_ranges, context_limit),
+        chunk_size,
+    )
+}
 
-    let mut unread_spans = Vec::new();
+/// Overview chunks covering both the newest unread articles and the newest
+/// read-context articles. Touching spans are joined before chunking, so
+/// interleaved read and unread articles need as few requests as one
+/// contiguous range.
+pub fn plan_overview_chunks(
+    first_article: u64,
+    last_article: u64,
+    read_ranges: &[ArticleRange],
+    unread_limit: usize,
+    context_limit: usize,
+    chunk_size: usize,
+) -> Vec<ArticleRange> {
+    if chunk_size == 0 {
+        return Vec::new();
+    }
+    let mut spans = unread_spans(first_article, last_article, read_ranges, unread_limit);
+    spans.extend(read_context_spans(
+        first_article,
+        last_article,
+        read_ranges,
+        context_limit,
+    ));
+    chunk_ranges(normalize_ranges(spans), chunk_size)
+}
+
+/// The `unread_limit` highest-numbered unread articles in the active range,
+/// as ascending, disjoint spans.
+fn unread_spans(
+    first_article: u64,
+    last_article: u64,
+    read_ranges: &[ArticleRange],
+    unread_limit: usize,
+) -> Vec<ArticleRange> {
+    if first_article == 0 || last_article < first_article || unread_limit == 0 {
+        return Vec::new();
+    }
+    let read = read_within(first_article, last_article, read_ranges);
+    let mut spans = Vec::new();
     let mut cursor = Some(first_article);
     for range in read {
         let Some(current) = cursor else {
             break;
         };
         if range.first > current {
-            unread_spans.push(ArticleRange {
+            spans.push(ArticleRange {
                 first: current,
                 last: range.first - 1,
             });
@@ -218,16 +272,54 @@ pub fn plan_unread_chunks(
     }
     if let Some(current) = cursor {
         if current <= last_article {
-            unread_spans.push(ArticleRange {
+            spans.push(ArticleRange {
                 first: current,
                 last: last_article,
             });
         }
     }
+    newest(spans, unread_limit)
+}
 
-    let mut remaining = unread_limit as u128;
+/// The `context_limit` highest-numbered read articles in the active range,
+/// as ascending, disjoint spans.
+fn read_context_spans(
+    first_article: u64,
+    last_article: u64,
+    read_ranges: &[ArticleRange],
+    context_limit: usize,
+) -> Vec<ArticleRange> {
+    if first_article == 0 || last_article < first_article || context_limit == 0 {
+        return Vec::new();
+    }
+    newest(
+        read_within(first_article, last_article, read_ranges),
+        context_limit,
+    )
+}
+
+/// Normalized read ranges clipped to the active range.
+fn read_within(
+    first_article: u64,
+    last_article: u64,
+    read_ranges: &[ArticleRange],
+) -> Vec<ArticleRange> {
+    normalize_ranges(read_ranges.to_vec())
+        .into_iter()
+        .filter_map(|range| {
+            let first = range.first.max(first_article);
+            let last = range.last.min(last_article);
+            (first <= last).then_some(ArticleRange { first, last })
+        })
+        .collect()
+}
+
+/// The highest `limit` article numbers from ascending, disjoint `spans`,
+/// returned in ascending order.
+fn newest(spans: Vec<ArticleRange>, limit: usize) -> Vec<ArticleRange> {
+    let mut remaining = limit as u128;
     let mut selected = Vec::new();
-    for span in unread_spans.into_iter().rev() {
+    for span in spans.into_iter().rev() {
         if remaining == 0 {
             break;
         }
@@ -241,10 +333,13 @@ pub fn plan_unread_chunks(
         remaining -= take;
     }
     selected.reverse();
+    selected
+}
 
+fn chunk_ranges(ranges: Vec<ArticleRange>, chunk_size: usize) -> Vec<ArticleRange> {
     let chunk_size = u64::try_from(chunk_size).unwrap_or(u64::MAX);
     let mut chunks = Vec::new();
-    for range in selected {
+    for range in ranges {
         let mut start = range.first;
         loop {
             let end = start
@@ -444,6 +539,81 @@ mod tests {
         );
         assert!(plan_unread_chunks(0, 0, &[], 10, 5).is_empty());
         assert!(plan_unread_chunks(1, 10, &[], 0, 5).is_empty());
+    }
+
+    #[test]
+    fn read_context_takes_the_newest_read_articles_inside_the_active_range() {
+        let range = |first, last| ArticleRange { first, last };
+        // Read: 1-20 (partly expired below 5), 30-31, 40; unread elsewhere.
+        let read = [range(1, 20), range(30, 31), range(40, 40), range(90, 99)];
+        assert_eq!(
+            plan_read_context_chunks(5, 50, &read, 6, 2),
+            [range(18, 19), range(20, 20), range(30, 31), range(40, 40)]
+        );
+        assert_eq!(
+            plan_read_context_chunks(5, 50, &read, 100, 100),
+            [range(5, 20), range(30, 31), range(40, 40)]
+        );
+        assert!(plan_read_context_chunks(5, 50, &read, 0, 2).is_empty());
+        assert!(plan_read_context_chunks(5, 50, &[], 10, 2).is_empty());
+        assert!(plan_read_context_chunks(0, 0, &read, 10, 2).is_empty());
+    }
+
+    #[test]
+    fn combined_plan_joins_interleaved_read_and_unread_articles() {
+        let read = (1..=19)
+            .step_by(2)
+            .map(|number| ArticleRange {
+                first: number,
+                last: number,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            plan_overview_chunks(1, 20, &read, 100, 100, 1_000),
+            [ArticleRange { first: 1, last: 20 }]
+        );
+        assert_eq!(
+            plan_overview_chunks(1, 20, &read, 100, 100, 8),
+            [
+                ArticleRange { first: 1, last: 8 },
+                ArticleRange { first: 9, last: 16 },
+                ArticleRange {
+                    first: 17,
+                    last: 20
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn combined_plan_keeps_gaps_left_by_the_limits() {
+        let read = [ArticleRange { first: 1, last: 10 }];
+        // Context covers 8-10 and unread covers 11-20; 1-7 is left out.
+        assert_eq!(
+            plan_overview_chunks(1, 20, &read, 100, 3, 1_000),
+            [ArticleRange { first: 8, last: 20 }]
+        );
+        // With no context, read articles stay out of the plan.
+        assert_eq!(
+            plan_overview_chunks(1, 20, &read, 100, 0, 1_000),
+            [ArticleRange {
+                first: 11,
+                last: 20
+            }]
+        );
+        // Unread limited to 18-20 and context to 9-10: a real gap remains.
+        assert_eq!(
+            plan_overview_chunks(1, 20, &read, 3, 2, 1_000),
+            [
+                ArticleRange { first: 9, last: 10 },
+                ArticleRange {
+                    first: 18,
+                    last: 20
+                },
+            ]
+        );
+        assert!(plan_overview_chunks(1, 20, &read, 0, 0, 1_000).is_empty());
+        assert!(plan_overview_chunks(1, 20, &read, 10, 10, 0).is_empty());
     }
 
     #[test]

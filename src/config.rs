@@ -21,6 +21,8 @@ pub struct Config {
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
     pub initial_overview_limit: usize,
+    /// Read articles whose overview rows are also loaded for thread context.
+    pub context_overview_limit: usize,
     pub overview_chunk_size: usize,
 }
 
@@ -91,7 +93,7 @@ fn on_line(line_number: Option<usize>) -> String {
 }
 
 /// Top-level keys accepted in `config.toml`; must match `ConfigFile`.
-const KNOWN_KEYS: [&str; 14] = [
+const KNOWN_KEYS: [&str; 15] = [
     "server",
     "port",
     "use_tls",
@@ -102,6 +104,7 @@ const KNOWN_KEYS: [&str; 14] = [
     "connect_timeout",
     "read_timeout",
     "initial_overview_limit",
+    "context_overview_limit",
     "overview_chunk_size",
     "display_name",
     "display_email",
@@ -157,6 +160,7 @@ struct ConfigFile {
     connect_timeout: Option<u64>,
     read_timeout: Option<u64>,
     initial_overview_limit: Option<usize>,
+    context_overview_limit: Option<usize>,
     overview_chunk_size: Option<usize>,
     display_name: Option<String>,
     display_email: Option<String>,
@@ -249,6 +253,7 @@ impl Config {
             connect_timeout: Duration::from_secs(10),
             read_timeout: Duration::from_secs(30),
             initial_overview_limit: 10_000,
+            context_overview_limit: 500,
             overview_chunk_size: 1_000,
         }
     }
@@ -294,6 +299,9 @@ impl Config {
         }
         if let Some(limit) = file.initial_overview_limit {
             self.initial_overview_limit = limit;
+        }
+        if let Some(limit) = file.context_overview_limit {
+            self.context_overview_limit = limit;
         }
         if let Some(size) = file.overview_chunk_size {
             self.overview_chunk_size = size;
@@ -368,6 +376,7 @@ mod tests {
         assert_eq!(config.connect_timeout, Duration::from_secs(10));
         assert_eq!(config.read_timeout, Duration::from_secs(30));
         assert_eq!(config.initial_overview_limit, 10_000);
+        assert_eq!(config.context_overview_limit, 500);
         assert_eq!(config.overview_chunk_size, 1_000);
         assert_eq!(config.newsrc_path, PathBuf::from("/tmp/btrn-config/newsrc"));
     }
@@ -384,6 +393,7 @@ mod tests {
                 username = "reader"
                 password_command = ["pass", "show", "news/#account",]
                 initial_overview_limit = 5000
+                context_overview_limit = 0
                 overview_chunk_size = 500
                 connect_timeout = 4
                 read_timeout = 12
@@ -404,6 +414,7 @@ mod tests {
             )
         );
         assert_eq!(config.initial_overview_limit, 5000);
+        assert_eq!(config.context_overview_limit, 0);
         assert_eq!(config.connect_timeout, Duration::from_secs(4));
         assert_eq!(config.read_timeout, Duration::from_secs(12));
     }

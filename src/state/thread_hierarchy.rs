@@ -4,7 +4,7 @@
 
 use super::{SessionState, StateError};
 use crate::decoder::decode_header_value;
-use crate::thread::ThreadTree;
+use crate::thread::{ThreadRef, ThreadTree};
 use std::collections::HashMap;
 
 /// Columns of the article view's thread window.
@@ -52,15 +52,17 @@ pub struct HierarchyGrid {
 /// layout itself is a plain function of the tree.
 pub struct HierarchyInput<'a> {
     pub tree: &'a ThreadTree,
-    pub root: u64,
+    pub root: ThreadRef,
     pub subject_index: &'a dyn Fn(u64) -> usize,
     pub is_read: &'a dyn Fn(u64) -> bool,
     pub current: u64,
     pub previous: Option<u64>,
 }
 
-/// Builds the hierarchy for the thread rooted at `root` in a loaded group.
-/// The current article is drawn as read because presenting it marks it read.
+/// Builds the hierarchy for the thread containing article `root` in a
+/// loaded group, drawn from the thread's top node, which may be a
+/// placeholder. The current article is drawn as read because presenting it
+/// marks it read.
 pub fn build_hierarchy(
     state: &SessionState,
     group: &str,
@@ -73,7 +75,8 @@ pub fn build_hierarchy(
     if !tree.nodes.contains_key(&root) {
         return Err(StateError::ThreadNotLoaded);
     }
-    let subjects = subject_indexes(tree, root, |number| {
+    let root = tree.top(&ThreadRef::Article(root));
+    let subjects = subject_indexes(tree, &root, |number| {
         group_state
             .articles
             .get(&number)
@@ -93,15 +96,15 @@ pub fn build_hierarchy(
 }
 
 /// Numbers distinct normalized subjects from 1 in thread order. An article
-/// without a subject shares its parent's number.
+/// without a subject shares its loaded parent's number.
 fn subject_indexes(
     tree: &ThreadTree,
-    root: u64,
+    root: &ThreadRef,
     subject: impl Fn(u64) -> Option<String>,
 ) -> HashMap<u64, usize> {
     let mut numbers: Vec<String> = Vec::new();
     let mut indexes = HashMap::new();
-    for number in thread_order(tree, root) {
+    for number in tree.walk_articles(root) {
         let index = match subject(number) {
             Some(subject) => {
                 let normalized = normalize_subject(&subject);
@@ -134,18 +137,6 @@ fn normalize_subject(subject: &str) -> String {
     rest.to_owned()
 }
 
-fn thread_order(tree: &ThreadTree, root: u64) -> Vec<u64> {
-    let mut order = Vec::new();
-    let mut pending = vec![root];
-    while let Some(number) = pending.pop() {
-        order.push(number);
-        if let Some(node) = tree.nodes.get(&number) {
-            pending.extend(node.children.iter().rev().copied());
-        }
-    }
-    order
-}
-
 enum Placement {
     /// Continues on its parent's row.
     First { row: usize },
@@ -166,20 +157,8 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
     let mut current = None;
     let mut current_subject_index = None;
 
-    let mut root_col = 0;
-    if input
-        .tree
-        .nodes
-        .get(&input.root)
-        .is_some_and(|node| node.unresolved_parent.is_some())
-    {
-        grid.put(0, 0, UNRESOLVED_MARKER, false);
-        grid.put(0, UNRESOLVED_MARKER.len(), "--", false);
-        root_col = UNRESOLVED_MARKER.len() + 2;
-    }
-
-    let mut pending = vec![(input.root, root_col, Placement::First { row: 0 })];
-    while let Some((number, col, placement)) = pending.pop() {
+    let mut pending = vec![(input.root.clone(), 0, Placement::First { row: 0 })];
+    while let Some((node, col, placement)) = pending.pop() {
         let row = match placement {
             Placement::First { row } => row,
             Placement::Later {
@@ -196,35 +175,40 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
             }
         };
 
-        let subject_index = (input.subject_index)(number);
-        let (open, close) = if (input.is_read)(number) {
-            ('[', ']')
-        } else {
-            ('(', ')')
+        let end = match &node {
+            ThreadRef::Missing(_) => {
+                grid.put(row, col, UNRESOLVED_MARKER, false);
+                col + UNRESOLVED_MARKER.len()
+            }
+            ThreadRef::Article(number) => {
+                let number = *number;
+                let subject_index = (input.subject_index)(number);
+                let (open, close) = if (input.is_read)(number) {
+                    ('[', ']')
+                } else {
+                    ('(', ')')
+                };
+                let digits = subject_index.to_string();
+                let is_current = number == input.current;
+                let is_previous = input.previous == Some(number);
+                grid.put(row, col, &open.to_string(), is_current);
+                grid.put(row, col + 1, &digits, is_current || is_previous);
+                let end = col + 1 + digits.len();
+                grid.put(row, end, &close.to_string(), is_current);
+                let end = end + 1;
+                if is_current {
+                    current = Some(CellSpan {
+                        row,
+                        start: col,
+                        end,
+                    });
+                    current_subject_index = Some(subject_index);
+                }
+                end
+            }
         };
-        let digits = subject_index.to_string();
-        let is_current = number == input.current;
-        let is_previous = input.previous == Some(number);
-        grid.put(row, col, &open.to_string(), is_current);
-        grid.put(row, col + 1, &digits, is_current || is_previous);
-        let end = col + 1 + digits.len();
-        grid.put(row, end, &close.to_string(), is_current);
-        let end = end + 1;
-        if is_current {
-            current = Some(CellSpan {
-                row,
-                start: col,
-                end,
-            });
-            current_subject_index = Some(subject_index);
-        }
 
-        let children = input
-            .tree
-            .nodes
-            .get(&number)
-            .map(|node| node.children.as_slice())
-            .unwrap_or_default();
+        let children = input.tree.children(&node);
         if children.is_empty() {
             continue;
         }
@@ -245,7 +229,7 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
                     last: index + 1 == children.len(),
                 }
             };
-            pending.push((*child, child_col, placement));
+            pending.push((child.clone(), child_col, placement));
         }
     }
 
@@ -483,6 +467,20 @@ mod tests {
         ]);
         let grid = build_hierarchy(&state, "comp.test", 1, 2, None).unwrap();
         assert_eq!(texts(grid.rows()), ["(?)--(1)--[1]"]);
+    }
+
+    #[test]
+    fn placeholders_join_orphaned_siblings_under_one_marker() {
+        // Two replies to an expired article, one of them with a reply.
+        let mut state = session(vec![
+            article(4, "x", Some("expired"), "Re: topic"),
+            article(6, "y", Some("expired"), "Re: topic"),
+            article(7, "z", Some("x"), "Re: topic"),
+        ]);
+        state.mark_article_read("comp.test", 4).unwrap();
+        let grid = build_hierarchy(&state, "comp.test", 4, 6, None).unwrap();
+        assert_eq!(texts(grid.rows()), ["(?)+-[1]--(1)", "   \\-[1]"]);
+        assert_eq!(inverse(grid.rows()), ["", "     [1]"]);
     }
 
     #[test]

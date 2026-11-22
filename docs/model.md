@@ -52,15 +52,42 @@ The model should preserve raw article data long enough to support decoding and d
 * `unread_count`: number of unread articles.
 * `newest_date`: newest known article date.
 
-Article relationships should be built from `Message-ID`, `References`, and optionally `In-Reply-To`. Use the last valid `References` ID as the parent candidate, falling back to `In-Reply-To` only when `References` is empty. Subject lines must not create parent-child relationships. Missing, duplicate, cyclic, orphaned, and malformed references require a deterministic fallback; an article with no valid relationship becomes a thread root. Resolve duplicate Message-IDs to the article with the lowest server article number and report the duplicate. Break cycles by removing the parent edge from the highest article number in the cycle. Unresolved parent IDs remain attached to root nodes as diagnostics.
+Article relationships should be built from `Message-ID`, `References`, and optionally `In-Reply-To`. Use the last valid `References` ID as the parent candidate, falling back to `In-Reply-To` only when `References` is empty. Subject lines must not create parent-child relationships. Missing, duplicate, cyclic, orphaned, and malformed references require a deterministic fallback; an article with no valid relationship becomes a thread root. Resolve duplicate Message-IDs to the article with the lowest server article number and report the duplicate. Break cycles by removing the parent edge from the highest article number in the cycle. Unresolved parent IDs are kept on the article as diagnostics.
 
-If an article has a reference to a parent `Message-ID` that is not present in the currently loaded overview range, the parent relationship should remain unknown rather than being invented from subject or article position. In the thread hierarchy view, display the article with a literal `(?)` marker to indicate that its parent was not loaded or could not be resolved. The marker should not replace the article's normal read/unread and subject numbering.
+If an article's parent `Message-ID` is not in the loaded metadata, the
+relationship is never invented from subject or article position. Instead the
+article becomes a child of a placeholder node for that `Message-ID`. The
+placeholder's own parent comes from the earlier `References` entries: each
+earlier ID is the parent of the next, becoming another placeholder when it is
+not loaded, until a loaded article is reached. An `In-Reply-To` parent has no
+known ancestors. Articles that reference the same missing ancestors therefore
+share one thread. When articles disagree about a placeholder's parent, the
+lowest-numbered article wins, and a link that would create a cycle is dropped.
+Children are ordered by the lowest article number at or below them.
 
-When parent metadata is loaded later, replace `(?)` with the resolved relationship. If parent metadata remains unavailable because it expired or was outside the server range, retain `(?)` in the hierarchy. A loaded article may become a root in the current view while it has unresolved references.
+A placeholder holds no metadata and is never read, unread, or navigable by
+next/previous. It is drawn as `(?)` in the thread hierarchy (see
+[screens.md](./screens.md)). A thread whose root is a placeholder is
+identified by its first loaded article in walk order.
+
+When the missing article's metadata is loaded later, its placeholder is
+replaced by the article. If it stays unavailable because it expired or was
+outside the server range, the placeholder remains.
+
+Two mechanisms load parent metadata:
+
+* When a group loads, overview rows for the newest read articles are loaded as
+  well, only to give unread articles their already-read parents and siblings.
+  They change no read state and do not add threads to the thread selector,
+  which shows only threads with unread articles. The count is
+  `context_overview_limit` in [persistence.md](./persistence.md).
+* In the article view, `[` on an article whose parent is a placeholder fetches
+  that parent by `Message-ID` (see [nntp.md](./nntp.md)) and adds it to the
+  loaded group, under the article number from its `Xref` header.
 
 The hierarchy should support:
 
-* finding the parent and children of an article;
+* finding the parent and children of an article or placeholder;
 * walking a thread in display order;
 * finding the next and previous unread article;
 * marking articles read;
@@ -75,7 +102,7 @@ the first unread thread (or the first row when all are read), supports explicit
 index selection, and clamps next/previous movement at the list boundaries.
 This view model does not perform terminal rendering or network I/O.
 
-Headless article navigation is created from a loaded thread root and its
+Headless article navigation is created from a loaded thread and its
 group-scoped read ranges. It starts at the first unread article in deterministic
 thread traversal order, or the first article if the thread is fully read. Next
 and previous operations move across all known articles; next/previous unread

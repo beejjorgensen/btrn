@@ -15,7 +15,7 @@ E2E testing should be feasible and valuable, but it should be layered so that te
 
 2. **Wire-to-model tests**
    * Feed fake-server fixtures through protocol parsing and into groups, articles, threads, and read state.
-   * Verify unknown parents produce `(?)`.
+   * Verify unknown parents produce `(?)` placeholders, read-context rows attach replies to already-read parents, and a parent fetched by Message-ID replaces its placeholder.
    * Verify the configured newest-unread overview window and on-demand older-range loading.
 
 3. **Terminal state and snapshot tests**

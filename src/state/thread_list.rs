@@ -1,12 +1,13 @@
 use super::{GroupState, SessionState, StateError};
 use crate::decoder::{decode_header_value, DecodeIssue};
 use crate::model::article::ArticleMetadata;
-use crate::thread::ThreadTree;
 use chrono::DateTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadRow {
     pub group_name: String,
+    /// The thread's first loaded article in walk order. It is the root
+    /// article unless the root is a placeholder for an unloaded article.
     pub root_article_number: u64,
     pub article_numbers: Vec<u64>,
     pub subject: String,
@@ -104,8 +105,9 @@ fn build_rows(group_state: &GroupState, group: &str, state: &SessionState) -> Ve
         .threads
         .roots
         .iter()
-        .map(|root| {
-            let article_numbers = walk_thread(&group_state.threads, *root);
+        .filter_map(|root| {
+            let article_numbers = group_state.threads.walk_articles(root);
+            let first_article = *article_numbers.first()?;
             let subject_article = article_numbers
                 .iter()
                 .find(|number| {
@@ -125,7 +127,11 @@ fn build_rows(group_state: &GroupState, group: &str, state: &SessionState) -> Ve
                 .filter_map(|number| group_state.articles.get(number))
                 .filter_map(parse_date)
                 .max();
-            let newest_article_number = article_numbers.iter().copied().max().unwrap_or(*root);
+            let newest_article_number = article_numbers
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(first_article);
             let unread_count = article_numbers
                 .iter()
                 .filter(|number| !state.is_read(group, **number))
@@ -137,9 +143,9 @@ fn build_rows(group_state: &GroupState, group: &str, state: &SessionState) -> Ve
                     .get(number)
                     .is_some_and(|node| node.unresolved_parent.is_some())
             });
-            ThreadRow {
+            Some(ThreadRow {
                 group_name: group.to_owned(),
-                root_article_number: *root,
+                root_article_number: first_article,
                 article_numbers,
                 subject,
                 unread_count,
@@ -147,21 +153,9 @@ fn build_rows(group_state: &GroupState, group: &str, state: &SessionState) -> Ve
                 newest_article_number,
                 has_unresolved_parent,
                 decode_issues,
-            }
+            })
         })
         .collect()
-}
-
-pub(super) fn walk_thread(tree: &ThreadTree, root: u64) -> Vec<u64> {
-    let mut articles = Vec::new();
-    let mut pending = vec![root];
-    while let Some(number) = pending.pop() {
-        articles.push(number);
-        if let Some(node) = tree.nodes.get(&number) {
-            pending.extend(node.children.iter().rev().copied());
-        }
-    }
-    articles
 }
 
 fn parse_date(metadata: &ArticleMetadata) -> Option<i64> {
@@ -283,6 +277,42 @@ mod tests {
         empty.select_previous();
         assert_eq!(empty.selected_index(), None);
         assert_eq!(empty.selected(), None);
+    }
+
+    #[test]
+    fn orphans_sharing_an_unloaded_root_form_one_row() {
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    LoadedArticle {
+                        article_number: 8,
+                        metadata: metadata(
+                            "a",
+                            &["root", "gone"],
+                            "Re: topic",
+                            "Wed, 02 Jan 2019 10:00:00 +0000",
+                        ),
+                    },
+                    LoadedArticle {
+                        article_number: 9,
+                        metadata: metadata(
+                            "b",
+                            &["root"],
+                            "Re: topic",
+                            "Wed, 02 Jan 2019 11:00:00 +0000",
+                        ),
+                    },
+                ],
+            )
+            .unwrap();
+        let list = ThreadList::from_session(&state, "comp.test").unwrap();
+        assert_eq!(list.rows.len(), 1);
+        assert_eq!(list.rows[0].root_article_number, 8);
+        assert_eq!(list.rows[0].article_numbers, [8, 9]);
+        assert_eq!(list.rows[0].unread_count, 2);
+        assert!(list.rows[0].has_unresolved_parent);
     }
 
     #[test]

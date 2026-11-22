@@ -20,6 +20,10 @@ Status labels are defined in the [documentation index](./README.md).
 * `connect_timeout`: NNTP TCP/TLS connection timeout in seconds. Default: `10`.
 * `read_timeout`: NNTP socket read/write inactivity timeout in seconds. Default: `30`.
 * `initial_overview_limit`: maximum number of newest unread article numbers to load when initially entering a group. Default: `10,000`.
+* `context_overview_limit`: number of newest read article numbers whose
+  overview rows are also loaded when entering a group, so replies can be
+  shown under parents read in earlier sessions. `0` disables it. Default:
+  `500`.
 * `overview_chunk_size`: maximum range requested in one XOVER call. Default: `1,000`.
 * `display_name`: optional display name for the `From:` line when
   posting, for example `"Example Name"`.

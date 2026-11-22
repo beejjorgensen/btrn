@@ -127,6 +127,9 @@ d Tristan Wibberley    26  >Inversion-of-control and dependency-injection in C
 [[-- Select Threads (date order) -- All --]]
 ```
 
+The count after the newsgroup name is the number of unread articles in the
+listed threads; read articles loaded only for thread context are not counted.
+
 For the username column in the thread selector, just list their name,
 not an email.
 
@@ -285,6 +288,11 @@ Keys:
 * `p`: go back to the previous unread article in the current thread
 * `q`, Backspace, or `Esc`: return to the thread selector
 * `r`: redraw
+* `[`: go to the parent of the current article. If the parent is not loaded,
+  it is fetched by `Message-ID` and added to the thread (see
+  [model.md](./model.md)). If the server no longer has it, the prompt is
+  followed by `Parent article is not available.` until the next redraw. On
+  a thread root, `[` does nothing.
 * `F`: post a followup (see [posting.md](./posting.md))
 * Ctrl-C: exit the program (on every screen), saving newsrc
 * `F`: Post a follow-up article to this one, quoting the original text.
@@ -324,9 +332,16 @@ vertically on the third row) when possible. Near the edges of the graph it
 stops at the graph's extent, and the highlight moves toward that edge of the
 window. A graph smaller than the window is anchored at its top-left.
 
-If an article refers to a parent missing from the loaded overview metadata,
-draw `(?)--` beside that article in the hierarchy (to the left of the thread
-root, since only roots have unresolved parents). This is an unresolved-parent
-marker, not a subject or article-number placeholder. When parent metadata is
-loaded, update the hierarchy and remove `(?)`; if it remains unavailable,
-retain the marker.
+An article whose parent is missing from the loaded metadata hangs from a
+placeholder, drawn as `(?)` and joined like any other node. Placeholders
+chain through the `References` ancestors that are also missing, and
+replies to the same missing article share its placeholder:
+
+```
+(?)+-[1]--(1)
+   \-[1]
+```
+
+A placeholder has no subject number and is never highlighted. When the
+missing article is loaded, its placeholder is replaced by the article; if it
+remains unavailable, the placeholder stays.

@@ -4,6 +4,7 @@ mod group;
 pub mod overview;
 pub mod post;
 
+use crate::model::article::MessageId;
 use crate::persistence::newsrc::ArticleRange;
 pub use capabilities::ServerCapabilities;
 pub use group::GroupSelection;
@@ -93,6 +94,7 @@ impl std::error::Error for AuthenticationError {}
 pub enum ArticleError {
     Transport(NntpError),
     InvalidArticleNumber,
+    InvalidMessageId,
     ArticleNotFound { status: u16, response: Vec<u8> },
     UnexpectedStatus { status: u16, response: Vec<u8> },
 }
@@ -102,6 +104,7 @@ impl std::fmt::Display for ArticleError {
         match self {
             Self::Transport(error) => write!(formatter, "{error}"),
             Self::InvalidArticleNumber => write!(formatter, "invalid article number"),
+            Self::InvalidMessageId => write!(formatter, "invalid message ID"),
             Self::ArticleNotFound { status: 423, .. } => {
                 write!(formatter, "article number not found")
             }
@@ -584,6 +587,21 @@ impl NntpSession {
         self.fetch_article_part("BODY", article_number, 222)
     }
 
+    /// The headers of the article with `message_id`, which need not be in
+    /// the current group.
+    pub fn article_headers_by_id(
+        &mut self,
+        message_id: &MessageId,
+    ) -> Result<Vec<Vec<u8>>, ArticleError> {
+        // Message IDs never contain whitespace or controls; requiring ASCII
+        // as well keeps the command line printable.
+        let id = std::str::from_utf8(message_id.as_bytes())
+            .ok()
+            .filter(|id| id.is_ascii())
+            .ok_or(ArticleError::InvalidMessageId)?;
+        self.fetch_article_lines(&format!("HEAD <{id}>"), 221)
+    }
+
     fn fetch_article_part(
         &mut self,
         command: &str,
@@ -593,8 +611,16 @@ impl NntpSession {
         if article_number == 0 {
             return Err(ArticleError::InvalidArticleNumber);
         }
+        self.fetch_article_lines(&format!("{command} {article_number}"), success_status)
+    }
+
+    fn fetch_article_lines(
+        &mut self,
+        command: &str,
+        success_status: u16,
+    ) -> Result<Vec<Vec<u8>>, ArticleError> {
         let response = self
-            .execute(&format!("{command} {article_number}"), true)
+            .execute(command, true)
             .map_err(ArticleError::Transport)?;
         if matches!(response.status, 423 | 430) {
             return Err(ArticleError::ArticleNotFound {
@@ -1066,6 +1092,51 @@ mod tests {
                 status: 430,
                 response: b"430 no article with that message-id".to_vec(),
             })
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetches_headers_by_message_id_and_reports_expired_articles() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "HEAD <parent@example>");
+            stream
+                .write_all(
+                    b"221 0 <parent@example>\r\n\
+                      Message-ID: <parent@example>\r\n\
+                      Xref: news.example comp.test:7\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+            read_command(&mut reader, "HEAD <gone@example>");
+            stream
+                .write_all(b"430 no article with that message-id\r\n")
+                .unwrap();
+        });
+
+        let mut session = connect(address).unwrap();
+        let id = |value: &[u8]| crate::model::article::MessageId::parse(value).unwrap();
+        assert_eq!(
+            session
+                .article_headers_by_id(&id(b"<parent@example>"))
+                .unwrap(),
+            [
+                b"Message-ID: <parent@example>".to_vec(),
+                b"Xref: news.example comp.test:7".to_vec()
+            ]
+        );
+        assert_eq!(
+            session.article_headers_by_id(&id(b"<gone@example>")),
+            Err(ArticleError::ArticleNotFound {
+                status: 430,
+                response: b"430 no article with that message-id".to_vec(),
+            })
+        );
+        assert_eq!(
+            session.article_headers_by_id(&id("<caf\u{e9}@example>".as_bytes())),
+            Err(ArticleError::InvalidMessageId)
         );
         server.join().unwrap();
     }

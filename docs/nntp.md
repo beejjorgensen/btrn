@@ -190,6 +190,9 @@ For the initial implementation:
 * split requests into ranges no larger than `overview_chunk_size`, defaulting to `1,000`;
 * perform older-range loads only when the user pages beyond the currently loaded range or explicitly requests a refresh;
 * include the surrounding known article range when required to complete thread roots and parent relationships, then discard or release transient rows that are no longer needed for the active session;
+* also load the `context_overview_limit` (default `500`) newest read article numbers, in the same chunks, so already-read parents are available to the thread tree; these rows change no read state;
+* join touching unread and read-context ranges before splitting them into chunks, so read marks interleaved with unread articles do not turn into one request per range; the number of `OVER` requests is set by the span of article numbers, not by how fragmented the newsrc ranges are;
+* build the thread tree once, after every chunk of a group load has arrived;
 * never infer that articles outside the loaded range are read; they are simply not loaded.
 
 Range sizes have these tradeoffs:
@@ -214,9 +217,13 @@ Retrieve full metadata or bodies with `HEAD`, `BODY`, or `ARTICLE`.
 * `HEAD <article-number>` for filtered headers;
 * `BODY <article-number>` for the body;
 * `ARTICLE <article-number>` only when a complete RFC 5322-style article is needed;
+* `HEAD <message-id>` for a thread parent that is not loaded; the response
+  carries article number `0`, so the article number in the current group is
+  taken from the `Xref` header, and an article without an `Xref` entry for
+  the group is treated as unavailable;
 * retain server article number and group outside the article text.
 
-Status `423` means unknown article number. `430` means unknown article or no article with that Message-ID. These statuses must remain distinguishable from network and malformed-response failures.
+Status `423` means unknown article number. `430` means unknown article or no article with that Message-ID. These statuses must remain distinguishable from network and malformed-response failures. A `430` for a parent fetched by Message-ID leaves its placeholder in the thread.
 
 Do not retain `423`, `430`, or permanent server failures as article content. Such responses may appear only in transient operation results and must not create or update a cached article.
 

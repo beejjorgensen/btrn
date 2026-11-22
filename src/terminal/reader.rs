@@ -1,15 +1,17 @@
 use crate::decoder;
+use crate::model::article::{ArticleMetadata, MessageId, RawArticle};
 use crate::nntp::{ArticleError, NntpSession};
 use crate::posting::PostingSettings;
 use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_hierarchy::build_hierarchy;
 use crate::state::thread_list::ThreadList;
-use crate::state::{SessionState, StateError};
+use crate::state::{LoadedArticle, SessionState, StateError};
 use crate::terminal::article_view::{
-    present_article, render_article_page, ArticleLayout, ArticleViewContext,
+    present_article, prompt_line, render_article_page, ArticleLayout, ArticleViewContext,
 };
 use crate::terminal::selector;
 use crate::terminal::session::TerminalSession;
+use crate::thread::ThreadRef;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::queue;
 use crossterm::terminal::{self, Clear, ClearType};
@@ -30,6 +32,9 @@ pub enum ReaderOperation {
     NextUnreadArticle,
     PreviousUnreadArticle,
     Followup,
+    /// `[`: go to the current article's parent, fetching it by message ID
+    /// when it is not loaded.
+    ParentArticle,
     Redraw,
     /// Ctrl-C: exit the program from any screen.
     Interrupt,
@@ -56,6 +61,7 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
         (ReaderScreen::Article, KeyCode::Char('F')) => ReaderOperation::Followup,
+        (ReaderScreen::Article, KeyCode::Char('[')) => ReaderOperation::ParentArticle,
         (ReaderScreen::Threads, KeyCode::Char(letter))
             if letter.is_ascii_alphanumeric() && letter != 'q' =>
         {
@@ -91,7 +97,21 @@ pub struct ReaderState {
     /// The article viewed before the current one, highlighted in the thread
     /// window.
     previous_article: Option<u64>,
+    /// A one-time message shown after the article prompt on the next redraw.
+    notice: Option<&'static str>,
 }
+
+/// Where `[` leads from the current article.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParentTarget {
+    /// The article is a thread root.
+    None,
+    Loaded(u64),
+    /// The parent is a placeholder for an article that is not loaded.
+    Missing(MessageId),
+}
+
+pub(crate) const PARENT_UNAVAILABLE: &str = "Parent article is not available.";
 
 /// The decoded article on screen, kept in memory only so paging and redraws do
 /// not refetch it or mark it read again.
@@ -132,6 +152,7 @@ impl ReaderState {
             article_page: 0,
             current_article: None,
             previous_article: None,
+            notice: None,
         }
     }
 
@@ -220,6 +241,61 @@ impl ReaderState {
         );
         if self.selected_article_number().is_none() {
             return Err(ReaderStateError::NoArticleSelected);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn parent_target(&self, state: &SessionState) -> ParentTarget {
+        let Some(article_number) = self.selected_article_number() else {
+            return ParentTarget::None;
+        };
+        let Some(group) = state.groups.get(&self.threads.group_name) else {
+            return ParentTarget::None;
+        };
+        match group.threads.parent(&ThreadRef::Article(article_number)) {
+            None => ParentTarget::None,
+            Some(ThreadRef::Article(parent)) => ParentTarget::Loaded(parent),
+            Some(ThreadRef::Missing(id)) => ParentTarget::Missing(id),
+        }
+    }
+
+    pub(crate) fn select_article(&mut self, article_number: u64) -> bool {
+        self.article_navigation
+            .as_mut()
+            .is_some_and(|navigation| navigation.select_article(article_number))
+    }
+
+    /// Adds a parent fetched by message ID to the group and selects it. The
+    /// thread is rebuilt because the new article can replace placeholders
+    /// and join the current thread to others. Loading it changes no read
+    /// state.
+    pub(crate) fn adopt_fetched_parent(
+        &mut self,
+        state: &mut SessionState,
+        article_number: u64,
+        metadata: ArticleMetadata,
+    ) -> Result<(), ReaderStateError> {
+        let group = self.threads.group_name.clone();
+        state
+            .load_articles(
+                &group,
+                [LoadedArticle {
+                    article_number,
+                    metadata,
+                }],
+            )
+            .map_err(ReaderStateError::State)?;
+        let first = state
+            .groups
+            .get(&group)
+            .and_then(|loaded| loaded.threads.thread_first_article(article_number))
+            .ok_or(ReaderStateError::NoArticleSelected)?;
+        let mut navigation = ArticleNavigation::from_thread(state, &group, first)
+            .map_err(ReaderStateError::State)?;
+        navigation.select_article(article_number);
+        self.article_navigation = Some(navigation);
+        if let Some(root) = self.reading_threads.get_mut(self.reading_thread_index) {
+            *root = first;
         }
         Ok(())
     }
@@ -406,6 +482,7 @@ pub(crate) fn run_interactive_in_session(
                         let article = fetch_decoded_article(session, article_number)?;
                         reader_state.set_current_article(article_number, article);
                     }
+                    let notice = reader_state.notice.take();
                     let (context, layout) = reader_state
                         .article_view(state, article_number, width)
                         .expect("current article was cached");
@@ -429,6 +506,18 @@ pub(crate) fn run_interactive_in_session(
                             width,
                             height,
                         )?;
+                    }
+                    if let Some(notice) = notice {
+                        let prompt = prompt_line(&context, &layout, page, height);
+                        let used = u16::try_from(prompt.chars().count()).unwrap_or(u16::MAX);
+                        selector::write_line(
+                            &mut terminal.output,
+                            &format!("  {notice}"),
+                            false,
+                            width.saturating_sub(used),
+                            false,
+                        )?;
+                        terminal.output.flush()?;
                     }
                     reader_state.article_page = page;
                 }
@@ -548,11 +637,44 @@ pub(crate) fn run_interactive_in_session(
                     }
                 }
             }
+            ReaderOperation::ParentArticle => match reader_state.parent_target(state) {
+                ParentTarget::None => {}
+                ParentTarget::Loaded(parent) => redraw = reader_state.select_article(parent),
+                ParentTarget::Missing(id) => {
+                    let group = reader_state.threads.group_name.clone();
+                    match fetch_parent_metadata(session, &group, &id)? {
+                        Some((number, metadata)) => reader_state
+                            .adopt_fetched_parent(state, number, metadata)
+                            .map_err(ReaderError::State)?,
+                        None => reader_state.notice = Some(PARENT_UNAVAILABLE),
+                    }
+                    redraw = true;
+                }
+            },
             ReaderOperation::Interrupt => return Ok(ReaderExit::QuitApplication),
             ReaderOperation::Redraw => redraw = true,
             ReaderOperation::Ignore => {}
         }
     }
+}
+
+/// The group article number and metadata of the article with `id`, or
+/// `None` when the server no longer has it or it is not in `group`.
+fn fetch_parent_metadata(
+    session: &mut NntpSession,
+    group: &str,
+    id: &MessageId,
+) -> Result<Option<(u64, ArticleMetadata)>, ReaderError> {
+    let mut lines = match session.article_headers_by_id(id) {
+        Ok(lines) => lines,
+        Err(ArticleError::ArticleNotFound { .. }) => return Ok(None),
+        Err(error) => return Err(ReaderError::Article(error)),
+    };
+    lines.push(Vec::new());
+    let article = RawArticle::parse(&lines).article;
+    Ok(article
+        .xref_article_number(group)
+        .map(|number| (number, article.metadata())))
 }
 
 fn fetch_decoded_article(
@@ -796,7 +918,7 @@ fn render_thread_list(
         .threads
         .rows
         .iter()
-        .map(|row| row.article_numbers.len())
+        .map(|row| row.unread_count)
         .sum::<usize>();
     queue!(
         output,
@@ -949,9 +1071,7 @@ impl From<io::Error> for ReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::article::{ArticleMetadata, MessageId};
     use crate::state::thread_list::ThreadList;
-    use crate::state::LoadedArticle;
     use crossterm::event::KeyModifiers;
 
     fn loaded_article(number: u64, id: &str, parent: Option<&str>) -> LoadedArticle {
@@ -1506,5 +1626,73 @@ mod tests {
         assert_eq!(reader.selected_article_number(), Some(1));
         assert!(!reader.advance_to_next_thread(&data).unwrap());
         assert_eq!(reader.screen(), ReaderScreen::Threads);
+    }
+
+    #[test]
+    fn bracket_moves_to_a_loaded_parent_or_names_the_missing_one() {
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Char('['))),
+            ReaderOperation::ParentArticle
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('['))),
+            ReaderOperation::Ignore
+        );
+
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    loaded_article(5, "parent", Some("expired")),
+                    loaded_article(6, "child", Some("parent")),
+                ],
+            )
+            .unwrap();
+        state.mark_article_read("comp.test", 5).unwrap();
+        let mut reader = reader_for(&state);
+        reader.start_reading(&state).unwrap();
+        assert_eq!(reader.selected_article_number(), Some(6));
+        assert_eq!(reader.parent_target(&state), ParentTarget::Loaded(5));
+        assert!(reader.select_article(5));
+        assert_eq!(reader.selected_article_number(), Some(5));
+        assert_eq!(
+            reader.parent_target(&state),
+            ParentTarget::Missing(MessageId::parse(b"<expired>").unwrap())
+        );
+    }
+
+    #[test]
+    fn adopting_a_fetched_parent_joins_it_to_the_thread_without_marking_read() {
+        // 7 replies to <parent>, which replies to <root>; neither is loaded.
+        let mut state = SessionState::default();
+        let mut child = loaded_article(7, "child", None);
+        child.metadata.references = vec![
+            MessageId::parse(b"<root>").unwrap(),
+            MessageId::parse(b"<parent>").unwrap(),
+        ];
+        state.load_articles("comp.test", [child]).unwrap();
+        let mut reader = reader_for(&state);
+        reader.start_reading(&state).unwrap();
+        let ParentTarget::Missing(id) = reader.parent_target(&state) else {
+            panic!("parent should be a placeholder");
+        };
+        assert_eq!(id, MessageId::parse(b"<parent>").unwrap());
+
+        let mut parent = loaded_article(3, "parent", Some("root"));
+        parent.metadata.subject = Some(b"Re: topic".to_vec());
+        reader
+            .adopt_fetched_parent(&mut state, 3, parent.metadata)
+            .unwrap();
+        assert_eq!(reader.selected_article_number(), Some(3));
+        let navigation = reader.article_navigation.as_ref().unwrap();
+        assert_eq!(navigation.article_numbers(), [3, 7]);
+        assert_eq!(
+            reader.parent_target(&state),
+            ParentTarget::Missing(MessageId::parse(b"<root>").unwrap())
+        );
+        assert!(!state.is_read("comp.test", 3));
+        assert!(state.newsrc.entry("comp.test").is_none());
+        assert_eq!(reader.reading_threads, [3]);
     }
 }

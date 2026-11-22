@@ -241,8 +241,7 @@ fn main() {
                         &mut session,
                         &mut state,
                         &group,
-                        config.initial_overview_limit,
-                        config.overview_chunk_size,
+                        overview_limits(&config),
                     ) {
                         Ok(loaded) => loaded,
                         Err(error) => {
@@ -274,8 +273,7 @@ fn main() {
                         &mut session,
                         &mut state,
                         &group,
-                        config.initial_overview_limit,
-                        config.overview_chunk_size,
+                        overview_limits(&config),
                     ) {
                         Ok(loaded) => loaded,
                         Err(error) => {
@@ -370,8 +368,7 @@ fn main() {
                     &mut session,
                     &mut state,
                     &group,
-                    config.initial_overview_limit,
-                    config.overview_chunk_size,
+                    overview_limits(&config),
                 ) {
                     Ok(loaded) => loaded,
                     Err(error) => {
@@ -486,8 +483,7 @@ fn main() {
                     &mut session,
                     &mut state,
                     &group,
-                    config.initial_overview_limit,
-                    config.overview_chunk_size,
+                    overview_limits(&config),
                     |completed, total| {
                         let percent = if total == 0 {
                             100
@@ -562,4 +558,12 @@ fn print_usage() {
          use --interactive without --group to select newsgroups interactively\n\
          configure server and optional credentials in ~/.config/btrn/config.toml"
     );
+}
+
+fn overview_limits(config: &config::Config) -> group_loader::OverviewLimits {
+    group_loader::OverviewLimits {
+        unread: config.initial_overview_limit,
+        read_context: config.context_overview_limit,
+        chunk_size: config.overview_chunk_size,
+    }
 }

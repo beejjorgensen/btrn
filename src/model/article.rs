@@ -143,6 +143,28 @@ impl RawArticle {
             .map(|header| header.value.as_slice())
     }
 
+    /// The article's number in `group` from its `Xref` header
+    /// (`Xref: server group:number ...`). Fetching an article by message ID
+    /// does not otherwise reveal its number.
+    pub fn xref_article_number(&self, group: &str) -> Option<u64> {
+        let value = self.header(b"Xref")?;
+        value
+            .split(|byte| byte.is_ascii_whitespace())
+            .filter(|token| !token.is_empty())
+            .skip(1)
+            .find_map(|token| {
+                let separator = token.iter().rposition(|byte| *byte == b':')?;
+                if &token[..separator] != group.as_bytes() {
+                    return None;
+                }
+                let number = std::str::from_utf8(&token[separator + 1..]).ok()?;
+                if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                number.parse().ok().filter(|number| *number > 0)
+            })
+    }
+
     pub fn metadata(&self) -> ArticleMetadata {
         let mut issues = Vec::new();
         let message_id = self
@@ -255,6 +277,28 @@ fn valid_field_name(name: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_group_article_number_in_xref() {
+        let article = |xref: &[u8]| {
+            RawArticle::parse(&[[b"Xref: ".as_slice(), xref].concat(), Vec::new()]).article
+        };
+        let cross = article(b"news.example comp.lang.c:123 comp.misc:45");
+        assert_eq!(cross.xref_article_number("comp.misc"), Some(45));
+        assert_eq!(cross.xref_article_number("comp.lang.c"), Some(123));
+        assert_eq!(cross.xref_article_number("comp.lang"), None);
+        // The first token is the server name, never a group.
+        assert_eq!(
+            article(b"comp.misc:9 other:1").xref_article_number("comp.misc"),
+            None
+        );
+        assert_eq!(
+            article(b"host comp.misc:0 comp.misc:x").xref_article_number("comp.misc"),
+            None
+        );
+        let none = RawArticle::parse(&[b"Subject: s".to_vec(), Vec::new()]).article;
+        assert_eq!(none.xref_article_number("comp.misc"), None);
+    }
 
     #[test]
     fn splits_headers_from_body_and_unfolds_continuations() {

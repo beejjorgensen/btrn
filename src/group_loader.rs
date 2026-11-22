@@ -1,8 +1,20 @@
-use crate::nntp::{GroupSelection, NntpSession, OverviewError};
-use crate::persistence::newsrc::plan_unread_chunks;
+use crate::nntp::{GroupSelection, NntpSession, OverviewError, OverviewRows};
+use crate::persistence::newsrc::plan_overview_chunks;
 use crate::state::thread_list::ThreadList;
 use crate::state::{SessionState, StateError};
 use std::io;
+
+/// How many overview rows a group load requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverviewLimits {
+    /// The newest unread articles to load.
+    pub unread: usize,
+    /// The newest read articles also loaded, only to give the thread tree
+    /// already-read parents and siblings.
+    pub read_context: usize,
+    /// Article numbers per `OVER` request.
+    pub chunk_size: usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedGroupThreads {
@@ -36,25 +48,16 @@ pub fn load_group_threads(
     session: &mut NntpSession,
     state: &mut SessionState,
     group: &GroupSelection,
-    initial_overview_limit: usize,
-    overview_chunk_size: usize,
+    limits: OverviewLimits,
 ) -> Result<LoadedGroupThreads, GroupOverviewError> {
-    load_group_threads_with_progress(
-        session,
-        state,
-        group,
-        initial_overview_limit,
-        overview_chunk_size,
-        |_, _| Ok(()),
-    )
+    load_group_threads_with_progress(session, state, group, limits, |_, _| Ok(()))
 }
 
 pub fn load_group_threads_with_progress(
     session: &mut NntpSession,
     state: &mut SessionState,
     selection: &GroupSelection,
-    initial_overview_limit: usize,
-    overview_chunk_size: usize,
+    limits: OverviewLimits,
     mut on_progress: impl FnMut(usize, usize) -> io::Result<()>,
 ) -> Result<LoadedGroupThreads, GroupOverviewError> {
     let group = selection.name.as_str();
@@ -62,33 +65,37 @@ pub fn load_group_threads_with_progress(
         .newsrc
         .entry(group)
         .map_or(&[][..], |entry| entry.read_ranges.as_slice());
-    let ranges = plan_unread_chunks(
+    let ranges = plan_overview_chunks(
         selection.first_article,
         selection.last_article,
         read_ranges,
-        initial_overview_limit,
-        overview_chunk_size,
+        limits.unread,
+        limits.read_context,
+        limits.chunk_size,
     );
     let total_chunks = ranges.len();
     on_progress(0, total_chunks).map_err(GroupOverviewError::Progress)?;
     let mut invalid_rows = 0;
     let mut out_of_range_rows = 0;
+    // Rows from every chunk are loaded together so the thread tree is built
+    // once per group load.
+    let mut loaded = OverviewRows {
+        articles: Vec::new(),
+        invalid_rows: Vec::new(),
+        out_of_range_rows: Vec::new(),
+    };
     for (completed_chunks, range) in ranges.into_iter().enumerate() {
         let rows = session
             .list_overview(range)
             .map_err(GroupOverviewError::Overview)?;
         invalid_rows += rows.invalid_rows.len();
         out_of_range_rows += rows.out_of_range_rows.len();
-        state
-            .load_overview(group, rows)
-            .map_err(GroupOverviewError::State)?;
+        loaded.articles.extend(rows.articles);
         on_progress(completed_chunks + 1, total_chunks).map_err(GroupOverviewError::Progress)?;
     }
-    if !state.groups.contains_key(group) {
-        state
-            .load_articles(group, [])
-            .map_err(GroupOverviewError::State)?;
-    }
+    state
+        .load_overview(group, loaded)
+        .map_err(GroupOverviewError::State)?;
     let threads = ThreadList::from_session(state, group).map_err(GroupOverviewError::State)?;
     Ok(LoadedGroupThreads {
         threads,
@@ -203,8 +210,11 @@ mod tests {
             &mut nntp,
             &mut state,
             &selection,
-            3,
-            2,
+            OverviewLimits {
+                unread: 3,
+                read_context: 0,
+                chunk_size: 2,
+            },
             |completed, total| {
                 progress.push((completed, total));
                 Ok(())
@@ -265,6 +275,183 @@ mod tests {
     }
 
     #[test]
+    fn read_context_rows_attach_replies_to_already_read_parents() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nREADER\r\nOVER\r\n.\r\n")
+                .unwrap();
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 4 1 4 comp.test\r\n").unwrap();
+            read_command(&mut reader, "LIST OVERVIEW.FMT");
+            stream
+                .write_all(
+                    b"215 overview format\r\n\
+                      Subject:\r\nFrom:\r\nDate:\r\nMessage-ID:\r\nReferences:\r\n:bytes\r\n:lines\r\n.\r\n",
+                )
+                .unwrap();
+            // The newest read article joins the unread range in one request.
+            read_command(&mut reader, "OVER 2-4");
+            stream
+                .write_all(
+                    b"224 overview follows\r\n\
+                      2\tRe: topic\tA <a@b>\tWed, 02 Jan 2019 10:00:00 +0000\t<parent@b>\t<root@b>\t12\t2\r\n\
+                      3\tRe: topic\tB <b@b>\tWed, 02 Jan 2019 11:00:00 +0000\t<reply@b>\t<root@b> <parent@b>\t12\t2\r\n\
+                      4\tother\tC <c@b>\tWed, 02 Jan 2019 12:00:00 +0000\t<other@b>\t\t12\t2\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+        });
+
+        let mut nntp = NntpSession::connect(
+            "127.0.0.1",
+            address.port(),
+            false,
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        nntp.discover_capabilities().unwrap();
+        let selection = nntp.select_group("comp.test").unwrap();
+        let mut state = SessionState::default();
+        state.newsrc.entries.insert(
+            "comp.test".to_owned(),
+            NewsrcEntry {
+                subscribed: true,
+                read_ranges: vec![ArticleRange { first: 1, last: 2 }],
+            },
+        );
+
+        let loaded = load_group_threads(
+            &mut nntp,
+            &mut state,
+            &selection,
+            OverviewLimits {
+                unread: 10,
+                read_context: 1,
+                chunk_size: 10,
+            },
+        )
+        .unwrap();
+        server.join().unwrap();
+
+        let group = &state.groups["comp.test"];
+        assert_eq!(group.threads.nodes[&3].parent, Some(2));
+        assert_eq!(group.threads.nodes[&3].unresolved_parent, None);
+        let thread = loaded
+            .threads
+            .rows
+            .iter()
+            .find(|row| row.article_numbers.contains(&3))
+            .unwrap();
+        assert_eq!(thread.article_numbers, [2, 3]);
+        assert_eq!(thread.unread_count, 1);
+        assert_eq!(
+            state.newsrc.entry("comp.test").unwrap().read_ranges,
+            [ArticleRange { first: 1, last: 2 }]
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 2),
+            Ok(3)
+        );
+    }
+
+    #[test]
+    fn interleaved_read_marks_load_in_full_chunks_and_thread_across_them() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nREADER\r\nOVER\r\n.\r\n")
+                .unwrap();
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 6 1 6 comp.test\r\n").unwrap();
+            read_command(&mut reader, "LIST OVERVIEW.FMT");
+            stream
+                .write_all(
+                    b"215 overview format\r\n\
+                      Subject:\r\nFrom:\r\nDate:\r\nMessage-ID:\r\nReferences:\r\n:bytes\r\n:lines\r\n.\r\n",
+                )
+                .unwrap();
+            // Read marks 1, 3 and 5 alternate with unread articles, yet the
+            // plan asks for whole chunks.
+            read_command(&mut reader, "OVER 1-3");
+            stream
+                .write_all(
+                    b"224 overview follows\r\n\
+                      1\ttopic\tA <a@b>\tWed, 02 Jan 2019 10:00:00 +0000\t<a1@b>\t\t12\t2\r\n\
+                      2\tRe: topic\tB <b@b>\tWed, 02 Jan 2019 10:01:00 +0000\t<a2@b>\t<a1@b>\t12\t2\r\n\
+                      3\tRe: topic\tA <a@b>\tWed, 02 Jan 2019 10:02:00 +0000\t<a3@b>\t<a1@b> <a2@b>\t12\t2\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+            read_command(&mut reader, "OVER 4-6");
+            stream
+                .write_all(
+                    b"224 overview follows\r\n\
+                      4\tRe: topic\tB <b@b>\tWed, 02 Jan 2019 10:03:00 +0000\t<a4@b>\t<a1@b> <a2@b> <a3@b>\t12\t2\r\n\
+                      5\tRe: topic\tA <a@b>\tWed, 02 Jan 2019 10:04:00 +0000\t<a5@b>\t<a1@b>\t12\t2\r\n\
+                      6\tRe: topic\tB <b@b>\tWed, 02 Jan 2019 10:05:00 +0000\t<a6@b>\t<a1@b> <a5@b>\t12\t2\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+        });
+
+        let mut nntp = NntpSession::connect(
+            "127.0.0.1",
+            address.port(),
+            false,
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        nntp.discover_capabilities().unwrap();
+        let selection = nntp.select_group("comp.test").unwrap();
+        let mut state = SessionState::default();
+        let read = [1, 3, 5].map(|number| ArticleRange {
+            first: number,
+            last: number,
+        });
+        state.newsrc.entries.insert(
+            "comp.test".to_owned(),
+            NewsrcEntry {
+                subscribed: true,
+                read_ranges: read.to_vec(),
+            },
+        );
+
+        let mut progress = Vec::new();
+        let loaded = load_group_threads_with_progress(
+            &mut nntp,
+            &mut state,
+            &selection,
+            OverviewLimits {
+                unread: 100,
+                read_context: 100,
+                chunk_size: 3,
+            },
+            |completed, total| {
+                progress.push((completed, total));
+                Ok(())
+            },
+        )
+        .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(progress, [(0, 2), (1, 2), (2, 2)]);
+        let tree = &state.groups["comp.test"].threads;
+        assert_eq!(tree.nodes[&4].parent, Some(3));
+        assert_eq!(tree.nodes[&6].parent, Some(5));
+        assert_eq!(loaded.threads.rows.len(), 1);
+        assert_eq!(loaded.threads.rows[0].article_numbers, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(loaded.threads.rows[0].unread_count, 3);
+        assert_eq!(state.newsrc.entry("comp.test").unwrap().read_ranges, read);
+    }
+
+    #[test]
     fn empty_group_loads_without_requesting_an_invalid_overview_range() {
         let (address, server) = fake_server(|mut stream| {
             stream.write_all(b"200 server ready\r\n").unwrap();
@@ -295,8 +482,11 @@ mod tests {
                 last_article: 0,
                 count_consistent: true,
             },
-            10,
-            5,
+            OverviewLimits {
+                unread: 10,
+                read_context: 10,
+                chunk_size: 5,
+            },
             |completed, total| {
                 progress.push((completed, total));
                 Ok(())

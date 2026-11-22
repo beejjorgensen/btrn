@@ -1,4 +1,5 @@
 use super::{SessionState, StateError};
+use crate::thread::ThreadRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ArticleNavigation {
@@ -15,14 +16,12 @@ impl ArticleNavigation {
     ) -> Result<Self, StateError> {
         super::validate_group_name(group)?;
         let group_state = state.groups.get(group).ok_or(StateError::GroupNotLoaded)?;
-        let root = group_state
-            .threads
-            .nodes
-            .get(&root_article_number)
-            .filter(|node| node.parent.is_none())
-            .ok_or(StateError::ThreadNotLoaded)?;
-        let article_numbers =
-            super::thread_list::walk_thread(&group_state.threads, root.article_number);
+        let tree = &group_state.threads;
+        if tree.thread_first_article(root_article_number) != Some(root_article_number) {
+            return Err(StateError::ThreadNotLoaded);
+        }
+        let top = tree.top(&ThreadRef::Article(root_article_number));
+        let article_numbers = tree.walk_articles(&top);
         let selected_index = article_numbers
             .iter()
             .position(|number| !state.is_read(group, *number))
@@ -38,7 +37,8 @@ impl ArticleNavigation {
         &self.group_name
     }
 
-    /// The thread root; navigation always starts its walk there.
+    /// The thread's first loaded article; navigation always starts its walk
+    /// at the thread root.
     pub fn root_article_number(&self) -> Option<u64> {
         self.article_numbers.first().copied()
     }
@@ -50,6 +50,21 @@ impl ArticleNavigation {
     pub fn selected_article_number(&self) -> Option<u64> {
         self.selected_index
             .and_then(|index| self.article_numbers.get(index).copied())
+    }
+
+    /// Selects `article_number` if it is in this thread.
+    pub fn select_article(&mut self, article_number: u64) -> bool {
+        match self
+            .article_numbers
+            .iter()
+            .position(|number| *number == article_number)
+        {
+            Some(index) => {
+                self.selected_index = Some(index);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn next_article(&mut self) -> Option<u64> {
@@ -119,13 +134,13 @@ pub fn first_unread_article_for_thread_root(
         .groups
         .get(group)
         .ok_or(ThreadRootError::State(StateError::GroupNotLoaded))?;
-    let root = group_state
+    match group_state
         .threads
-        .nodes
-        .get(&root_article_number)
-        .ok_or(ThreadRootError::OutsideLoadedWindow)?;
-    if root.parent.is_some() {
-        return Err(ThreadRootError::NotRoot);
+        .thread_first_article(root_article_number)
+    {
+        None => return Err(ThreadRootError::OutsideLoadedWindow),
+        Some(first) if first != root_article_number => return Err(ThreadRootError::NotRoot),
+        Some(_) => {}
     }
     ArticleNavigation::from_thread(state, group, root_article_number)
         .map_err(ThreadRootError::State)?
@@ -234,6 +249,31 @@ mod tests {
             Err(ThreadRootError::NotRoot)
         );
         assert!(!state.is_read("comp.test", 20));
+    }
+
+    #[test]
+    fn a_thread_under_a_placeholder_is_identified_by_its_first_article() {
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    article(5, "a", Some("expired")),
+                    article(6, "b", Some("expired")),
+                ],
+            )
+            .unwrap();
+        let navigation = ArticleNavigation::from_thread(&state, "comp.test", 5).unwrap();
+        assert_eq!(navigation.article_numbers(), [5, 6]);
+        assert_eq!(navigation.root_article_number(), Some(5));
+        assert_eq!(
+            ArticleNavigation::from_thread(&state, "comp.test", 6),
+            Err(StateError::ThreadNotLoaded)
+        );
+        assert_eq!(
+            first_unread_article_for_thread_root(&state, "comp.test", 6),
+            Err(ThreadRootError::NotRoot)
+        );
     }
 
     #[test]
