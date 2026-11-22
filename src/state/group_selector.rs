@@ -1,4 +1,4 @@
-use crate::nntp::active::{ActiveGroup, ActiveGroupList, PostingStatus};
+use crate::nntp::active::{ActiveGroupList, PostingStatus};
 use crate::persistence::newsrc::NewsrcState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,23 +21,7 @@ pub struct GroupRow {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupSelector {
     pub rows: Vec<GroupRow>,
-    selected_index: Option<usize>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GroupSelectionError {
-    IndexOutOfBounds,
-}
-
-impl std::fmt::Display for GroupSelectionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IndexOutOfBounds => write!(formatter, "group selection index is out of bounds"),
-        }
-    }
-}
-
-impl std::error::Error for GroupSelectionError {}
 
 impl GroupSelector {
     pub fn from_active(active: &ActiveGroupList, newsrc: &NewsrcState) -> Self {
@@ -63,14 +47,11 @@ impl GroupSelector {
                 marked: false,
             })
             .collect::<Vec<_>>();
-        let selected_index = (!rows.is_empty()).then_some(0);
-        Self {
-            rows,
-            selected_index,
-        }
+        Self { rows }
     }
 
-    pub fn from_groups(groups: &[ActiveGroup], newsrc: &NewsrcState) -> Self {
+    #[cfg(test)]
+    pub fn from_groups(groups: &[crate::nntp::active::ActiveGroup], newsrc: &NewsrcState) -> Self {
         Self::from_active(
             &ActiveGroupList {
                 groups: groups.to_vec(),
@@ -78,46 +59,6 @@ impl GroupSelector {
             },
             newsrc,
         )
-    }
-
-    pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-    }
-
-    pub fn selected(&self) -> Option<&GroupRow> {
-        self.selected_index.and_then(|index| self.rows.get(index))
-    }
-
-    pub fn select(&mut self, index: usize) -> Result<(), GroupSelectionError> {
-        if index >= self.rows.len() {
-            return Err(GroupSelectionError::IndexOutOfBounds);
-        }
-        self.selected_index = Some(index);
-        Ok(())
-    }
-
-    pub fn select_next(&mut self) {
-        let Some(last_index) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        self.selected_index = Some(
-            self.selected_index
-                .map_or(0, |index| index.saturating_add(1).min(last_index)),
-        );
-    }
-
-    pub fn select_previous(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        self.selected_index = Some(
-            self.selected_index
-                .map_or(0, |index| index.saturating_sub(1)),
-        );
-    }
-
-    pub fn toggle_selected(&mut self) -> Option<bool> {
-        self.toggle(self.selected_index?)
     }
 
     pub fn toggle(&mut self, index: usize) -> Option<bool> {
@@ -138,6 +79,7 @@ impl GroupSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nntp::active::ActiveGroup;
     use crate::persistence::newsrc::NewsrcEntry;
     use std::collections::BTreeMap;
 
@@ -205,37 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_movement_clamps_and_explicit_selection_checks_bounds() {
-        let mut selector = GroupSelector::from_groups(
-            &[group("a.test", 1, 1), group("b.test", 2, 2)],
-            &NewsrcState::default(),
-        );
-        assert_eq!(selector.selected_index(), Some(0));
-        assert_eq!(
-            selector.selected().map(|row| row.name.as_str()),
-            Some("a.test")
-        );
-        selector.select_previous();
-        assert_eq!(selector.selected_index(), Some(0));
-        selector.select_next();
-        assert_eq!(selector.selected_index(), Some(1));
-        selector.select_next();
-        assert_eq!(selector.selected_index(), Some(1));
-        assert_eq!(
-            selector.select(2),
-            Err(GroupSelectionError::IndexOutOfBounds)
-        );
-        assert!(selector.select(0).is_ok());
-
-        let mut empty = GroupSelector::default();
-        empty.select_next();
-        empty.select_previous();
-        assert_eq!(empty.selected_index(), None);
-        assert_eq!(empty.selected(), None);
-        assert_eq!(empty.toggle_selected(), None);
-    }
-
-    #[test]
     fn marks_multiple_groups_without_changing_newsrc_subscription_state() {
         let mut selector = GroupSelector::from_groups(
             &[
@@ -245,11 +156,10 @@ mod tests {
             ],
             &newsrc(),
         );
-        assert_eq!(selector.toggle_selected(), Some(true));
-        selector.select(2).unwrap();
-        assert_eq!(selector.toggle_selected(), Some(true));
+        assert_eq!(selector.toggle(0), Some(true));
+        assert_eq!(selector.toggle(2), Some(true));
         assert_eq!(selector.marked_groups(), ["comp.test", "z.test"]);
-        assert_eq!(selector.toggle_selected(), Some(false));
+        assert_eq!(selector.toggle(2), Some(false));
         assert_eq!(selector.marked_groups(), ["comp.test"]);
         assert_eq!(
             selector.rows[0].subscription,

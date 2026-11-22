@@ -184,6 +184,7 @@ pub fn normalize_ranges(mut ranges: Vec<ArticleRange>) -> Vec<ArticleRange> {
 
 /// Overview chunks covering the `unread_limit` highest-numbered unread
 /// articles in the active range `first_article..=last_article`.
+#[cfg(test)]
 pub fn plan_unread_chunks(
     first_article: u64,
     last_article: u64,
@@ -203,6 +204,7 @@ pub fn plan_unread_chunks(
 /// Overview chunks covering the `context_limit` highest-numbered read
 /// articles in the active range. Their metadata gives already-read parents
 /// and siblings to the thread tree without changing any read state.
+#[cfg(test)]
 pub fn plan_read_context_chunks(
     first_article: u64,
     last_article: u64,

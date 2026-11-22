@@ -22,23 +22,7 @@ pub struct ThreadRow {
 pub struct ThreadList {
     pub group_name: String,
     pub rows: Vec<ThreadRow>,
-    selected_index: Option<usize>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ThreadSelectionError {
-    IndexOutOfBounds,
-}
-
-impl std::fmt::Display for ThreadSelectionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IndexOutOfBounds => write!(formatter, "thread selection index is out of bounds"),
-        }
-    }
-}
-
-impl std::error::Error for ThreadSelectionError {}
 
 impl ThreadList {
     pub fn from_session(state: &SessionState, group: &str) -> Result<Self, StateError> {
@@ -52,51 +36,10 @@ impl ThreadList {
                 .then_with(|| right.newest_article_number.cmp(&left.newest_article_number))
                 .then_with(|| left.root_article_number.cmp(&right.root_article_number))
         });
-        let selected_index = rows
-            .iter()
-            .position(|row| row.unread_count > 0)
-            .or_else(|| (!rows.is_empty()).then_some(0));
         Ok(Self {
             group_name: group.to_owned(),
             rows,
-            selected_index,
         })
-    }
-
-    pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
-    }
-
-    pub fn selected(&self) -> Option<&ThreadRow> {
-        self.selected_index.and_then(|index| self.rows.get(index))
-    }
-
-    pub fn select(&mut self, index: usize) -> Result<(), ThreadSelectionError> {
-        if index >= self.rows.len() {
-            return Err(ThreadSelectionError::IndexOutOfBounds);
-        }
-        self.selected_index = Some(index);
-        Ok(())
-    }
-
-    pub fn select_next(&mut self) {
-        let Some(last_index) = self.rows.len().checked_sub(1) else {
-            return;
-        };
-        self.selected_index = Some(
-            self.selected_index
-                .map_or(0, |index| index.saturating_add(1).min(last_index)),
-        );
-    }
-
-    pub fn select_previous(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        self.selected_index = Some(
-            self.selected_index
-                .map_or(0, |index| index.saturating_sub(1)),
-        );
     }
 }
 
@@ -237,46 +180,6 @@ mod tests {
         assert_eq!(list.rows[1].article_numbers, [1, 2]);
         assert_eq!(list.rows[1].unread_count, 2);
         assert_eq!(list.rows[0].unread_count, 0);
-        assert_eq!(list.selected_index(), Some(1));
-        assert_eq!(list.selected().map(|row| row.root_article_number), Some(1));
-    }
-
-    #[test]
-    fn selection_is_explicit_clamped_and_safe_for_empty_lists() {
-        let mut state = SessionState::default();
-        state
-            .load_articles(
-                "comp.test",
-                [
-                    LoadedArticle {
-                        article_number: 1,
-                        metadata: metadata("one", &[], "one", "invalid"),
-                    },
-                    LoadedArticle {
-                        article_number: 2,
-                        metadata: metadata("two", &[], "two", "invalid"),
-                    },
-                ],
-            )
-            .unwrap();
-        let mut list = ThreadList::from_session(&state, "comp.test").unwrap();
-        assert_eq!(list.selected_index(), Some(0));
-        list.select_previous();
-        assert_eq!(list.selected_index(), Some(0));
-        list.select_next();
-        assert_eq!(list.selected_index(), Some(1));
-        list.select_next();
-        assert_eq!(list.selected_index(), Some(1));
-        list.select(0).unwrap();
-        assert_eq!(list.select(2), Err(ThreadSelectionError::IndexOutOfBounds));
-        assert_eq!(list.selected_index(), Some(0));
-
-        state.load_articles("misc.test", []).unwrap();
-        let mut empty = ThreadList::from_session(&state, "misc.test").unwrap();
-        empty.select_next();
-        empty.select_previous();
-        assert_eq!(empty.selected_index(), None);
-        assert_eq!(empty.selected(), None);
     }
 
     #[test]

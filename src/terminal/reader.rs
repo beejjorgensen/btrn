@@ -300,10 +300,6 @@ impl ReaderState {
         Ok(())
     }
 
-    pub fn next_article(&mut self) -> Option<u64> {
-        self.article_navigation.as_mut()?.next_article()
-    }
-
     fn next_unread_article(&mut self, state: &SessionState) -> Option<u64> {
         self.article_navigation.as_mut()?.next_unread_article(state)
     }

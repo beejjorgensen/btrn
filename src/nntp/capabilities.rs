@@ -51,6 +51,7 @@ impl ServerCapabilities {
         }
     }
 
+    #[cfg(test)]
     pub fn arguments(&self, name: &str) -> Option<&[Vec<u8>]> {
         self.entries
             .get(&name.to_ascii_uppercase())

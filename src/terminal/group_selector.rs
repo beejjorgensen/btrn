@@ -171,14 +171,6 @@ fn group_row_y(page: &GroupPage, group_index: usize) -> Option<u16> {
         .and_then(|visible_index| u16::try_from(visible_index + 2).ok())
 }
 
-pub fn run_interactive(
-    active: &ActiveGroupList,
-    newsrc: &NewsrcState,
-) -> io::Result<Option<Vec<String>>> {
-    let mut terminal = TerminalSession::enter()?;
-    run_interactive_in_session(active, newsrc, &mut terminal)
-}
-
 pub(crate) fn run_interactive_in_session(
     active: &ActiveGroupList,
     newsrc: &NewsrcState,

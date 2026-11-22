@@ -103,6 +103,7 @@ impl ArticleLayout {
         }
     }
 
+    #[cfg(test)]
     pub fn rows(&self) -> &[String] {
         &self.rows
     }

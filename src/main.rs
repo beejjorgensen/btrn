@@ -1,14 +1,14 @@
-pub mod cli;
-pub mod config;
-pub mod decoder;
-pub mod group_loader;
-pub mod model;
-pub mod nntp;
-pub mod persistence;
-pub mod posting;
-pub mod state;
-pub mod terminal;
-pub mod thread;
+mod cli;
+mod config;
+mod decoder;
+mod group_loader;
+mod model;
+mod nntp;
+mod persistence;
+mod posting;
+mod state;
+mod terminal;
+mod thread;
 
 use model::article::RawArticle;
 use nntp::active::parse_active_groups;

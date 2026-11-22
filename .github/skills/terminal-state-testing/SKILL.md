@@ -11,7 +11,7 @@ the [terminal rules](../../instructions/terminal.instructions.md).
 ## Layers and where they live
 
 * **Key dispatch:** call `operation_for_key(screen, key)` in `src/terminal/reader.rs`, or the private `operation_for_key(key)` in `src/terminal/group_selector.rs`, and assert the operation enum. Check that the key is ignored on screens where it doesn't apply.
-* **State transitions:** build a `SessionState` with `load_articles` and the test helper `loaded_article(number, id, parent)`, wrap it with `reader_for(&state)`, then call `ReaderState` methods such as `start_reading`, `next_article`, `parent_target` and `adopt_fetched_parent`. Assert the selected article, the screen, and that `state.is_read` and newsrc are unchanged unless the operation marks read.
+* **State transitions:** build a `SessionState` with `load_articles` and the test helper `loaded_article(number, id, parent)`, wrap it with `reader_for(&state)`, then call `ReaderState` methods such as `start_reading`, `advance_article`, `parent_target` and `adopt_fetched_parent`. Assert the selected article, the screen, and that `state.is_read` and newsrc are unchanged unless the operation marks read.
 * **Rendering:** render into a `Vec<u8>` and assert on the text. There is no snapshot framework; tests compare strings or rows directly.
   * `render_thread_list`, `thread_pages` and `render_article_page` take explicit width and height.
   * `strip_escapes` in the `src/terminal/article_view.rs` tests removes escape sequences, so you can compare visible text.

@@ -272,6 +272,7 @@ impl Grid {
 }
 
 impl HierarchyGrid {
+    #[cfg(test)]
     pub fn rows(&self) -> &[HierarchyRow] {
         &self.rows
     }
@@ -319,6 +320,7 @@ fn window_origin(center: usize, offset: usize, window: usize, extent: usize) -> 
 }
 
 /// The characters of a hierarchy row, for tests and diagnostics.
+#[cfg(test)]
 pub fn row_text(row: &[HierarchyChar]) -> String {
     row.iter().map(|cell| cell.character).collect()
 }

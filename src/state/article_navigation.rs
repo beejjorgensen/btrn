@@ -33,16 +33,13 @@ impl ArticleNavigation {
         })
     }
 
-    pub fn group_name(&self) -> &str {
-        &self.group_name
-    }
-
     /// The thread's first loaded article; navigation always starts its walk
     /// at the thread root.
     pub fn root_article_number(&self) -> Option<u64> {
         self.article_numbers.first().copied()
     }
 
+    #[cfg(test)]
     pub fn article_numbers(&self) -> &[u64] {
         &self.article_numbers
     }
@@ -65,21 +62,6 @@ impl ArticleNavigation {
             }
             None => false,
         }
-    }
-
-    pub fn next_article(&mut self) -> Option<u64> {
-        let next = self.selected_index?.checked_add(1)?;
-        if next >= self.article_numbers.len() {
-            return None;
-        }
-        self.selected_index = Some(next);
-        self.selected_article_number()
-    }
-
-    pub fn previous_article(&mut self) -> Option<u64> {
-        let previous = self.selected_index?.checked_sub(1)?;
-        self.selected_index = Some(previous);
-        self.selected_article_number()
     }
 
     pub fn next_unread_article(&mut self, state: &SessionState) -> Option<u64> {
@@ -193,14 +175,9 @@ mod tests {
         state.mark_article_read("comp.test", 10).unwrap();
         state.mark_article_read("comp.test", 20).unwrap();
 
-        let mut navigation = ArticleNavigation::from_thread(&state, "comp.test", 10).unwrap();
-        assert_eq!(navigation.group_name(), "comp.test");
+        let navigation = ArticleNavigation::from_thread(&state, "comp.test", 10).unwrap();
         assert_eq!(navigation.article_numbers(), [10, 20, 30, 40]);
         assert_eq!(navigation.selected_article_number(), Some(30));
-        assert_eq!(navigation.next_article(), Some(40));
-        assert_eq!(navigation.next_article(), None);
-        assert_eq!(navigation.selected_article_number(), Some(40));
-        assert_eq!(navigation.previous_article(), Some(30));
     }
 
     #[test]
@@ -225,7 +202,7 @@ mod tests {
         assert_eq!(navigation.selected_article_number(), Some(30));
         assert_eq!(navigation.previous_unread_article(&state), None);
         assert_eq!(navigation.selected_article_number(), Some(30));
-        assert_eq!(navigation.next_article(), Some(40));
+        assert!(navigation.select_article(40));
         assert_eq!(navigation.previous_unread_article(&state), Some(30));
         assert_eq!(navigation.previous_unread_article(&state), None);
         assert_eq!(navigation.selected_article_number(), Some(30));
