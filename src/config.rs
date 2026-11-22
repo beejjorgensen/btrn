@@ -11,7 +11,11 @@ pub struct Config {
     pub username: Option<String>,
     pub password: Option<String>,
     pub password_command: Option<Vec<String>>,
-    pub editor: String,
+    /// Editor program followed by its arguments.
+    pub editor: Vec<String>,
+    pub display_name: Option<String>,
+    pub display_email: Option<String>,
+    pub organization: Option<String>,
     pub config_dir: PathBuf,
     pub newsrc_path: PathBuf,
     pub connect_timeout: Duration,
@@ -87,7 +91,7 @@ fn on_line(line_number: Option<usize>) -> String {
 }
 
 /// Top-level keys accepted in `config.toml`; must match `ConfigFile`.
-const KNOWN_KEYS: [&str; 11] = [
+const KNOWN_KEYS: [&str; 14] = [
     "server",
     "port",
     "use_tls",
@@ -99,7 +103,45 @@ const KNOWN_KEYS: [&str; 11] = [
     "read_timeout",
     "initial_overview_limit",
     "overview_chunk_size",
+    "display_name",
+    "display_email",
+    "organization",
 ];
+
+/// A command given either as one string, split on whitespace, or as an
+/// array of program and arguments used as given.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CommandValue {
+    Line(String),
+    Words(Vec<String>),
+}
+
+impl CommandValue {
+    fn into_words(self) -> Vec<String> {
+        match self {
+            Self::Line(line) => split_command(&line),
+            Self::Words(words) => words,
+        }
+    }
+}
+
+/// Splits a command string on whitespace. No shell syntax is interpreted.
+pub fn split_command(line: &str) -> Vec<String> {
+    line.split_whitespace().map(str::to_owned).collect()
+}
+
+/// The first non-empty value among the named environment variables.
+fn environment_value(names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|value| value.to_string_lossy().into_owned())
+        .find(|value| !value.trim().is_empty())
+}
+
+const EDITOR_VARIABLES: [&str; 2] = ["BTRN_EDITOR", "EDITOR"];
+const ORGANIZATION_VARIABLES: [&str; 2] = ["BTRN_ORGANIZATION", "ORGANIZATION"];
 
 /// The shape of `config.toml`. Unset keys leave `Config` defaults in place.
 #[derive(Deserialize)]
@@ -110,12 +152,15 @@ struct ConfigFile {
     use_tls: Option<bool>,
     username: Option<String>,
     password: Option<String>,
-    password_command: Option<Vec<String>>,
-    editor: Option<String>,
+    password_command: Option<CommandValue>,
+    editor: Option<CommandValue>,
     connect_timeout: Option<u64>,
     read_timeout: Option<u64>,
     initial_overview_limit: Option<usize>,
     overview_chunk_size: Option<usize>,
+    display_name: Option<String>,
+    display_email: Option<String>,
+    organization: Option<String>,
 }
 
 /// Classifies a `toml` error by category and line only. The crate's own
@@ -142,27 +187,37 @@ impl Config {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        let editor = ["BTRN_EDITOR", "EDITOR"]
-            .iter()
-            .filter_map(std::env::var_os)
-            .map(|value| value.to_string_lossy().into_owned())
-            .find(|value| !value.is_empty())
-            .unwrap_or_else(|| "vim".to_owned());
-        Self::with_paths(home.join(".config/btrn"), editor)
+        let mut config = Self::with_paths(home.join(".config/btrn"), "vim".to_owned());
+        config.apply_environment(
+            environment_value(&EDITOR_VARIABLES),
+            environment_value(&ORGANIZATION_VARIABLES),
+        );
+        config
     }
 
+    /// Loads `config.toml`, then lets the environment override the editor and
+    /// organization.
     pub fn load() -> Result<Self, ConfigError> {
-        let defaults = Self::from_environment();
-        let mut config = Self::load_from_dir(defaults.config_dir.clone(), defaults.editor.clone())?;
-        if let Some(editor) = ["BTRN_EDITOR", "EDITOR"]
-            .iter()
-            .filter_map(std::env::var_os)
-            .map(|value| value.to_string_lossy().into_owned())
-            .find(|value| !value.is_empty())
-        {
-            config.editor = editor;
-        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut config = Self::load_from_dir(home.join(".config/btrn"), "vim".to_owned())?;
+        config.apply_environment(
+            environment_value(&EDITOR_VARIABLES),
+            environment_value(&ORGANIZATION_VARIABLES),
+        );
         Ok(config)
+    }
+
+    /// Applies environment overrides. Empty values are treated as unset by
+    /// the caller.
+    pub fn apply_environment(&mut self, editor: Option<String>, organization: Option<String>) {
+        if let Some(editor) = editor {
+            self.editor = split_command(&editor);
+        }
+        if let Some(organization) = organization {
+            self.organization = Some(organization);
+        }
     }
 
     pub fn load_from_dir(config_dir: PathBuf, editor: String) -> Result<Self, ConfigError> {
@@ -185,7 +240,10 @@ impl Config {
             username: None,
             password: None,
             password_command: None,
-            editor,
+            editor: split_command(&editor),
+            display_name: None,
+            display_email: None,
+            organization: None,
             config_dir,
             newsrc_path,
             connect_timeout: Duration::from_secs(10),
@@ -214,10 +272,19 @@ impl Config {
             self.password = Some(password);
         }
         if let Some(command) = file.password_command {
-            self.password_command = Some(command);
+            self.password_command = Some(command.into_words());
         }
         if let Some(editor) = file.editor {
-            self.editor = editor;
+            self.editor = editor.into_words();
+        }
+        if let Some(name) = file.display_name {
+            self.display_name = Some(name);
+        }
+        if let Some(email) = file.display_email {
+            self.display_email = Some(email);
+        }
+        if let Some(organization) = file.organization {
+            self.organization = Some(organization);
         }
         if let Some(seconds) = file.connect_timeout {
             self.connect_timeout = Duration::from_secs(seconds);
@@ -428,7 +495,9 @@ mod tests {
         let config = apply("server = \"news.example.net\"").unwrap();
         assert_eq!(config.port, 563);
         assert!(config.use_tls);
-        assert_eq!(config.editor, "vim");
+        assert_eq!(config.editor, ["vim"]);
+        assert_eq!(config.display_name, None);
+        assert_eq!(config.organization, None);
         assert_eq!(config.read_timeout, Duration::from_secs(30));
         assert!(config.password.is_none());
         assert!(apply("").is_ok());
@@ -486,5 +555,60 @@ mod tests {
             config.resolve_credentials(),
             Err(ConfigError::MissingUsername)
         ));
+    }
+
+    #[test]
+    fn password_command_and_editor_accept_a_whitespace_split_string() {
+        let config =
+            apply("password_command = \"pass  show\tnews/account\"\neditor = \"code --wait\"\n")
+                .unwrap();
+        assert_eq!(
+            config.password_command,
+            Some(vec!["pass".into(), "show".into(), "news/account".into()])
+        );
+        assert_eq!(config.editor, ["code", "--wait"]);
+    }
+
+    #[test]
+    fn editor_array_keeps_arguments_with_spaces() {
+        let config = apply("editor = [\"my editor\", \"--title\", \"two words\"]").unwrap();
+        assert_eq!(config.editor, ["my editor", "--title", "two words"]);
+        assert!(matches!(
+            apply("editor = 7"),
+            Err(ConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn string_password_command_runs_without_a_shell() {
+        let mut config =
+            apply("username = \"reader\"\npassword_command = \"printf secret\"").unwrap();
+        config.username = Some("reader".into());
+        assert_eq!(
+            config.resolve_credentials().unwrap().unwrap().password,
+            "secret"
+        );
+    }
+
+    #[test]
+    fn parses_posting_identity_keys() {
+        let config = apply(
+            "display_name = \"Example Name\"\ndisplay_email = \"user@example.com\"\norganization = \"Yoyodyne\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.display_name.as_deref(), Some("Example Name"));
+        assert_eq!(config.display_email.as_deref(), Some("user@example.com"));
+        assert_eq!(config.organization.as_deref(), Some("Yoyodyne"));
+    }
+
+    #[test]
+    fn environment_overrides_editor_and_organization() {
+        let mut config = apply("editor = \"nano\"\norganization = \"File Org\"").unwrap();
+        config.apply_environment(None, None);
+        assert_eq!(config.editor, ["nano"]);
+        assert_eq!(config.organization.as_deref(), Some("File Org"));
+        config.apply_environment(Some("emacs -nw".into()), Some("Env Org".into()));
+        assert_eq!(config.editor, ["emacs", "-nw"]);
+        assert_eq!(config.organization.as_deref(), Some("Env Org"));
     }
 }

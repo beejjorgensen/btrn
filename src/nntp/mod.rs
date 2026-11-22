@@ -2,11 +2,13 @@ pub mod active;
 mod capabilities;
 mod group;
 pub mod overview;
+pub mod post;
 
 use crate::persistence::newsrc::ArticleRange;
 pub use capabilities::ServerCapabilities;
 pub use group::GroupSelection;
 pub use overview::{OverviewError, OverviewFormat, OverviewRows};
+pub use post::PostError;
 
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
@@ -163,6 +165,9 @@ pub struct NntpSession {
     capabilities: Option<ServerCapabilities>,
     overview_format: Option<OverviewFormat>,
     selected_group: Option<String>,
+    /// Whether the greeting (or a later `MODE READER`) reported `200`
+    /// (posting allowed) rather than `201`.
+    posting_allowed: bool,
 }
 
 impl NntpSession {
@@ -241,12 +246,14 @@ impl NntpSession {
             capabilities: None,
             overview_format: None,
             selected_group: None,
+            posting_allowed: false,
         };
         let greeting = session.read_response(false)?;
         let status = greeting.status;
         if status != 200 && status != 201 {
             return Err(NntpError::protocol(ProtocolError::UnexpectedGreeting));
         }
+        session.posting_allowed = status == 200;
         Ok(session)
     }
 
@@ -270,7 +277,16 @@ impl NntpSession {
     }
 
     pub fn mode_reader(&mut self) -> Result<NntpResponse, NntpError> {
-        self.execute("MODE READER", false)
+        let response = self.execute("MODE READER", false)?;
+        if matches!(response.status, 200 | 201) {
+            self.posting_allowed = response.status == 200;
+        }
+        Ok(response)
+    }
+
+    /// Whether the server's greeting allowed posting.
+    pub fn posting_allowed(&self) -> bool {
+        self.posting_allowed
     }
 
     fn read_response(&mut self, multiline: bool) -> Result<NntpResponse, NntpError> {
@@ -445,16 +461,68 @@ impl NntpSession {
         self.execute("LIST ACTIVE", true)
     }
 
+    /// The `LIST ACTIVE` posting status of one group, or `None` when the
+    /// server does not answer the single-group form or does not list it.
+    pub fn group_posting_status(
+        &mut self,
+        name: &str,
+    ) -> Result<Option<active::PostingStatus>, NntpError> {
+        if !group::is_valid_group_argument(name) {
+            return Err(NntpError::protocol(ProtocolError::InvalidCommand));
+        }
+        let response = self.execute(&format!("LIST ACTIVE {name}"), true)?;
+        if response.status != 215 {
+            return Ok(None);
+        }
+        Ok(active::parse_active_groups(&response.data)
+            .groups
+            .into_iter()
+            .find(|group| group.name == name)
+            .map(|group| group.posting_status))
+    }
+
+    /// Posts an article given as header lines, a blank line, and body lines
+    /// without line endings. Never retried automatically.
+    pub fn post(&mut self, article: &[Vec<u8>]) -> Result<(), PostError> {
+        let wire = post::encode_article(article)?;
+        let response = self.execute("POST", false).map_err(PostError::Transport)?;
+        match response.status {
+            340 => {}
+            440 => {
+                return Err(PostError::NotPermitted {
+                    response: response.first_line,
+                })
+            }
+            status => {
+                return Err(PostError::UnexpectedStatus {
+                    status,
+                    response: response.first_line,
+                })
+            }
+        }
+        let stream = self.stream.get_mut();
+        stream
+            .write_all(&wire)
+            .and_then(|()| stream.flush())
+            .map_err(|_| PostError::Transport(NntpError::protocol(ProtocolError::Io)))?;
+        let response = self.read_response(false).map_err(PostError::Transport)?;
+        match response.status {
+            240 => Ok(()),
+            441 => Err(PostError::Failed {
+                response: response.first_line,
+            }),
+            status => Err(PostError::UnexpectedStatus {
+                status,
+                response: response.first_line,
+            }),
+        }
+    }
+
     pub fn select_group(
         &mut self,
         name: &str,
     ) -> Result<GroupSelection, group::GroupSelectionError> {
-        if name.is_empty()
-            || !name.is_ascii()
-            || name
-                .bytes()
-                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-        {
+        if !group::is_valid_group_argument(name) {
             return Err(group::GroupSelectionError::InvalidName);
         }
         let response = self
@@ -1377,6 +1445,174 @@ mod tests {
         .unwrap();
         let response = session.execute("NOOP", false).unwrap();
         assert_eq!(response.status, 250);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn records_whether_the_greeting_allows_posting() {
+        for (greeting, allowed) in [
+            (b"200 server ready\r\n".as_slice(), true),
+            (b"201 no posting\r\n", false),
+        ] {
+            let (address, server) = fake_server(move |mut stream| {
+                stream.write_all(greeting).unwrap();
+            });
+            let session = connect(address).unwrap();
+            assert_eq!(session.posting_allowed(), allowed);
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn mode_reader_updates_posting_permission() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 transit ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "MODE READER");
+            stream.write_all(b"201 reader, no posting\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        assert!(session.posting_allowed());
+        session.mode_reader().unwrap();
+        assert!(!session.posting_allowed());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reads_one_groups_posting_status() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "LIST ACTIVE comp.test");
+            stream
+                .write_all(b"215 list follows\r\ncomp.test 25 20 n\r\n.\r\n")
+                .unwrap();
+            read_command(&mut reader, "LIST ACTIVE misc.test");
+            stream.write_all(b"501 syntax error\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.group_posting_status("comp.test").unwrap(),
+            Some(PostingStatus::Prohibited)
+        );
+        assert_eq!(session.group_posting_status("misc.test").unwrap(), None);
+        assert!(session.group_posting_status("bad group").is_err());
+        server.join().unwrap();
+    }
+
+    fn sample_post() -> Vec<Vec<u8>> {
+        vec![
+            b"Newsgroups: comp.test".to_vec(),
+            b"Subject: hello".to_vec(),
+            Vec::new(),
+            b".dotted".to_vec(),
+            b"plain".to_vec(),
+        ]
+    }
+
+    #[test]
+    fn posts_a_dot_stuffed_article() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "POST");
+            stream.write_all(b"340 send article\r\n").unwrap();
+            let mut received = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == ".\r\n" {
+                    break;
+                }
+                received.push(line);
+            }
+            assert_eq!(
+                received,
+                [
+                    "Newsgroups: comp.test\r\n",
+                    "Subject: hello\r\n",
+                    "\r\n",
+                    "..dotted\r\n",
+                    "plain\r\n"
+                ]
+            );
+            stream.write_all(b"240 article received\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        session.post(&sample_post()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reports_post_not_permitted_and_rejected() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "POST");
+            stream.write_all(b"440 posting not permitted\r\n").unwrap();
+            read_command(&mut reader, "POST");
+            stream.write_all(b"340 send article\r\n").unwrap();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == ".\r\n" {
+                    break;
+                }
+            }
+            stream.write_all(b"441 duplicate article\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        let error = session.post(&sample_post()).unwrap_err();
+        assert_eq!(
+            error,
+            PostError::NotPermitted {
+                response: b"440 posting not permitted".to_vec()
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "posting not permitted: 440 posting not permitted"
+        );
+        assert_eq!(
+            session.post(&sample_post()).unwrap_err(),
+            PostError::Failed {
+                response: b"441 duplicate article".to_vec()
+            }
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn reports_disconnect_during_article_transfer() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "POST");
+            stream.write_all(b"340 send article\r\n").unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            drop(reader);
+            drop(stream);
+        });
+        let mut session = connect(address).unwrap();
+        assert!(matches!(
+            session.post(&sample_post()),
+            Err(PostError::Transport(_))
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_article_lines_before_sending_post() {
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 ready\r\n").unwrap();
+        });
+        let mut session = connect(address).unwrap();
+        assert_eq!(
+            session.post(&[b"Subject: a\r\nInjected: b".to_vec()]),
+            Err(PostError::InvalidArticle)
+        );
         server.join().unwrap();
     }
 }

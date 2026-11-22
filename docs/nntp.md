@@ -252,7 +252,7 @@ The default failure policy is:
 * selection or read-state mutations must not occur before a successful operation result;
 * `POST` is never retried automatically, either directly or after a reconnect. The user resends from the posting menu, and the resend reuses the article's generated `Message-ID` (see [posting.md](./posting.md)).
 
-### Posting — Planned
+### Posting — Implemented
 
 Posting uses the `POST` command:
 
@@ -262,6 +262,11 @@ Posting uses the `POST` command:
    endings. Any line beginning with `.` gets an extra leading `.`
    (dot-stuffing). End with a line containing only `.`.
 3. `240` means the article was received; `441` means posting failed.
+
+The session records whether posting is allowed from the greeting (`200`
+allowed, `201` not allowed), updated by a `200` or `201` reply to
+`MODE READER`. `LIST ACTIVE <group>` reads one group's posting status;
+a reply other than `215` means the status is unknown.
 
 `440`, `441`, and transport failures are returned as typed results, with
 the server response text kept for display. Fake-server fixtures should

@@ -167,6 +167,17 @@ impl RawArticle {
     }
 }
 
+/// Parses a whitespace-separated list of message IDs, skipping malformed
+/// entries.
+pub fn parse_message_ids(value: &[u8]) -> Vec<MessageId> {
+    parse_message_id_list("References", value, &mut Vec::new())
+}
+
+/// Whether `name` is a valid RFC 5322 header field name.
+pub fn is_valid_header_name(name: &[u8]) -> bool {
+    valid_field_name(name)
+}
+
 fn parse_single_message_id(
     field: &'static str,
     value: &[u8],

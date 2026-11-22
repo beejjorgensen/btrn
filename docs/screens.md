@@ -285,6 +285,8 @@ Keys:
 * `p`: go back to the previous unread article in the current thread
 * `q`, Backspace, or `Esc`: return to the thread selector
 * `r`: redraw
+* `F`: post a followup (see [posting.md](./posting.md))
+* Ctrl-C: exit the program (on every screen), saving newsrc
 * `F`: Post a follow-up article to this one, quoting the original text.
   See the `posting.md` document.
 

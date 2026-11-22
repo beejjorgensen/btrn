@@ -5,6 +5,7 @@ pub mod group_loader;
 pub mod model;
 pub mod nntp;
 pub mod persistence;
+pub mod posting;
 pub mod state;
 pub mod terminal;
 pub mod thread;
@@ -111,6 +112,14 @@ fn main() {
     if let Some(port) = port {
         config.port = port;
     }
+    let posting_settings = posting::PostingSettings {
+        identity: posting::PostingIdentity {
+            display_name: config.display_name.clone(),
+            display_email: config.display_email.clone(),
+            organization: config.organization.clone(),
+        },
+        editor: config.editor.clone(),
+    };
     let Some(host) = config.server.as_deref() else {
         eprintln!("{}", config::ConfigError::MissingServer);
         print_usage();
@@ -243,8 +252,12 @@ fn main() {
                     };
                     let reader =
                         terminal::reader::ReaderState::new(loaded.threads, group.last_article);
-                    let reader_result =
-                        terminal::reader::run_interactive(&mut session, &mut state, reader);
+                    let reader_result = terminal::reader::run_interactive(
+                        &mut session,
+                        &mut state,
+                        reader,
+                        &posting_settings,
+                    );
                     let save_result = state.newsrc.write_atomic(&config.newsrc_path);
                     if let Err(error) = save_result {
                         eprintln!("could not write {}: {error}", config.newsrc_path.display());
@@ -509,6 +522,7 @@ fn main() {
                     &mut state,
                     reader,
                     &mut terminal_session,
+                    &posting_settings,
                 ) {
                     Ok(reader_exit) => reader_exit,
                     Err(error) => {

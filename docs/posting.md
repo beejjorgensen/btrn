@@ -2,7 +2,7 @@
 
 Status labels are defined in the [documentation index](./README.md).
 
-## Posting — Planned
+## Posting — Implemented
 
 If the user is at the article view prompt (either the `MORE` prompt or
 the end-of-article prompt), they can hit `F` (capital `F`) to post a
@@ -39,8 +39,12 @@ allowed. Each of the following refuses posting with its own message:
 The group status is fetched with `LIST ACTIVE <group>` for the current
 group only; other groups in the followup's `Newsgroups` are not checked.
 
-The message is shown on a cleared alternate screen. Any key returns the
-user to the end-of-article prompt.
+The message is shown on a cleared alternate screen, followed by
+`Press any key to continue.` Any key returns the user to the
+end-of-article prompt.
+
+A `201` reply to `MODE READER` also counts as the server not allowing
+posting, and a `200` reply allows it.
 
 ## Warning Screen
 
@@ -203,8 +207,9 @@ All of the following are drawn on a cleared alternate screen. The
 terminal leaves the alternate screen and raw mode while the editor runs
 and restores them afterward.
 
-* If the editor cannot be launched, print an error and return the user
-  to the end-of-article prompt.
+* If the editor cannot be launched, print an error (followed by
+  `Press any key to continue.`) and return the user to the
+  end-of-article prompt after a key press.
 * If the editor exits with a non-zero status, print an error and show the
   `Edit or Abort` menu.
 * If the file is unchanged, print
@@ -243,22 +248,30 @@ Organization: Yoyodyne Industries
 
 btrn always sets these headers itself, replacing any the user entered:
 `Message-ID`, `Date`, `Path`, `User-Agent`, `References`,
-`Content-Type`, and `Content-Transfer-Encoding`. `Path` is left for the
-server to add.
+`MIME-Version`, `Content-Type`, and `Content-Transfer-Encoding`. `Path`
+is left for the server to add.
+
+The posted headers are written in this order: `From`, `Newsgroups`,
+`Subject`, `Followup-To` (if any), `References` (if any), `Message-ID`,
+`Date`, any other headers the user entered (such as `Organization` and
+`Keywords`) in file order, `User-Agent`, `MIME-Version`, `Content-Type`,
+and `Content-Transfer-Encoding`. Spaces around the commas in
+`Newsgroups` and `Followup-To` are removed.
 
 ### From encoding
 
-The display name is quoted as an RFC 5322 quoted-string when it contains
-characters other than letters, digits, spaces, and the RFC 5322 `atext`
-characters; `"` and `\` inside it are escaped with a backslash. A
-display name containing non-ASCII characters is instead written as RFC
-2047 encoded-words, without quotes, since encoded-words may not appear
-inside a quoted-string.
+An ASCII display name is always written as an RFC 5322 quoted-string,
+with `"` and `\` inside it escaped with a backslash. A display name
+containing non-ASCII characters is instead written as RFC 2047
+encoded-words, without quotes, since encoded-words may not appear inside
+a quoted-string. A `From` line without a display name is posted as the
+bare address.
 
 ### Non-ASCII headers
 
 Non-ASCII text in `Subject` and other unstructured headers is written
-as RFC 2047 encoded-words using UTF-8.
+as RFC 2047 base64 encoded-words using UTF-8, each at most 75
+characters, with one encoded-word per folded header line.
 
 ### Message-ID
 
@@ -286,6 +299,7 @@ most recent IDs as fit. If the followed-up-on article has no
 Let's go with these hardcoded for now:
 
 ```
+MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 Content-Transfer-Encoding: 8bit
 ```

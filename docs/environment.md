@@ -2,7 +2,7 @@
 
 Status labels are defined in the [documentation index](./README.md).
 
-## Environment Variables — Planned
+## Environment Variables — Implemented
 
 Environment variables override the corresponding values in the
 configuration file described in [persistence.md](./persistence.md). A

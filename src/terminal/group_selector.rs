@@ -22,6 +22,9 @@ fn operation_for_key(key: KeyEvent) -> GroupSelectorOperation {
     if key.kind != KeyEventKind::Press {
         return GroupSelectorOperation::Ignore;
     }
+    if crate::terminal::is_interrupt(&key) {
+        return GroupSelectorOperation::Quit;
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => GroupSelectorOperation::Quit,
         KeyCode::Char('>') => GroupSelectorOperation::NextPage,
@@ -392,6 +395,13 @@ mod tests {
         assert_eq!(
             operation_for_key(key(KeyCode::Char('0'))),
             GroupSelectorOperation::ToggleGroup('0')
+        );
+        assert_eq!(
+            operation_for_key(KeyEvent::new(
+                KeyCode::Char('c'),
+                crossterm::event::KeyModifiers::CONTROL
+            )),
+            GroupSelectorOperation::Quit
         );
         assert_eq!(
             operation_for_key(key(KeyCode::Char('q'))),

@@ -36,6 +36,15 @@ impl std::fmt::Display for GroupSelectionError {
 
 impl std::error::Error for GroupSelectionError {}
 
+/// Whether `name` can be sent as a single command argument.
+pub(super) fn is_valid_group_argument(name: &str) -> bool {
+    !name.is_empty()
+        && name.is_ascii()
+        && !name
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+}
+
 pub(super) fn parse_group_response(
     response: NntpResponse,
     requested_name: &str,

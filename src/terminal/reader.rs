@@ -1,5 +1,6 @@
 use crate::decoder;
 use crate::nntp::{ArticleError, NntpSession};
+use crate::posting::PostingSettings;
 use crate::state::article_navigation::ArticleNavigation;
 use crate::state::thread_hierarchy::build_hierarchy;
 use crate::state::thread_list::ThreadList;
@@ -28,13 +29,19 @@ pub enum ReaderOperation {
     NextArticle,
     NextUnreadArticle,
     PreviousUnreadArticle,
+    Followup,
     Redraw,
+    /// Ctrl-C: exit the program from any screen.
+    Interrupt,
     Ignore,
 }
 
 pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation {
     if key.kind != KeyEventKind::Press {
         return ReaderOperation::Ignore;
+    }
+    if crate::terminal::is_interrupt(&key) {
+        return ReaderOperation::Interrupt;
     }
     match (screen, key.code) {
         (_, KeyCode::Esc) => ReaderOperation::Quit,
@@ -48,6 +55,7 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Article, KeyCode::Char('p')) => ReaderOperation::PreviousUnreadArticle,
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
+        (ReaderScreen::Article, KeyCode::Char('F')) => ReaderOperation::Followup,
         (ReaderScreen::Threads, KeyCode::Char(letter))
             if letter.is_ascii_alphanumeric() && letter != 'q' =>
         {
@@ -305,6 +313,11 @@ impl ReaderState {
         Some((context, layout))
     }
 
+    /// Moves the article view to its last page; rendering clamps the index.
+    fn show_last_article_page(&mut self) {
+        self.article_page = usize::MAX;
+    }
+
     fn set_current_article(&mut self, article_number: u64, article: decoder::DecodedArticle) {
         if let Some(current) = &self.current_article {
             if current.article_number != article_number {
@@ -353,9 +366,10 @@ pub(crate) fn run_interactive(
     session: &mut NntpSession,
     state: &mut SessionState,
     reader_state: ReaderState,
+    posting: &PostingSettings,
 ) -> Result<ReaderExit, ReaderError> {
     let mut terminal = TerminalSession::enter()?;
-    run_interactive_in_session(session, state, reader_state, &mut terminal)
+    run_interactive_in_session(session, state, reader_state, &mut terminal, posting)
 }
 
 pub(crate) fn run_interactive_in_session(
@@ -363,6 +377,7 @@ pub(crate) fn run_interactive_in_session(
     state: &mut SessionState,
     mut reader_state: ReaderState,
     terminal: &mut TerminalSession,
+    posting: &PostingSettings,
 ) -> Result<ReaderExit, ReaderError> {
     let mut redraw = true;
     loop {
@@ -513,6 +528,27 @@ pub(crate) fn run_interactive_in_session(
             ReaderOperation::PreviousUnreadArticle => {
                 redraw = reader_state.previous_unread_article(state).is_some();
             }
+            ReaderOperation::Followup => {
+                let Some(article_number) = reader_state.selected_article_number() else {
+                    continue;
+                };
+                let Some(article) = reader_state.cached_article(article_number).cloned() else {
+                    continue;
+                };
+                let group = reader_state.threads.group_name.clone();
+                match crate::terminal::posting::run_followup(
+                    session, terminal, posting, &group, &article,
+                )? {
+                    crate::terminal::posting::PostingExit::QuitApplication => {
+                        return Ok(ReaderExit::QuitApplication)
+                    }
+                    crate::terminal::posting::PostingExit::ReturnToArticle => {
+                        reader_state.show_last_article_page();
+                        redraw = true;
+                    }
+                }
+            }
+            ReaderOperation::Interrupt => return Ok(ReaderExit::QuitApplication),
             ReaderOperation::Redraw => redraw = true,
             ReaderOperation::Ignore => {}
         }
@@ -1011,6 +1047,21 @@ mod tests {
             operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('n'))),
             ReaderOperation::ToggleThread('n')
         );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Char('F'))),
+            ReaderOperation::Followup
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('F'))),
+            ReaderOperation::ToggleThread('f')
+        );
+        let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        for screen in [ReaderScreen::Threads, ReaderScreen::Article] {
+            assert_eq!(
+                operation_for_key(screen, control_c),
+                ReaderOperation::Interrupt
+            );
+        }
     }
 
     fn decoded_body(body: &str) -> decoder::DecodedArticle {

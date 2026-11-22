@@ -1,3 +1,4 @@
+use crossterm::cursor::Show;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, terminal};
 use std::io;
@@ -21,6 +22,35 @@ impl TerminalSession {
             raw_mode: true,
             alternate_screen: true,
         })
+    }
+}
+
+impl TerminalSession {
+    /// Restores the normal screen and cooked mode so another program, such
+    /// as the editor, can use the terminal.
+    pub(crate) fn suspend(&mut self) -> io::Result<()> {
+        if self.raw_mode {
+            terminal::disable_raw_mode()?;
+            self.raw_mode = false;
+        }
+        if self.alternate_screen {
+            execute!(self.output, LeaveAlternateScreen, Show)?;
+            self.alternate_screen = false;
+        }
+        Ok(())
+    }
+
+    /// Re-enters the alternate screen and raw mode after `suspend`.
+    pub(crate) fn resume(&mut self) -> io::Result<()> {
+        if !self.alternate_screen {
+            execute!(self.output, EnterAlternateScreen)?;
+            self.alternate_screen = true;
+        }
+        if !self.raw_mode {
+            enable_raw_mode()?;
+            self.raw_mode = true;
+        }
+        Ok(())
     }
 }
 

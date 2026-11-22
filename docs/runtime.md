@@ -88,7 +88,7 @@ post-flush read-marking flow; navigation alone never marks it read.
 
 Disallow multiple instances of trn running at once for now.
 
-## Posting and Editor — Planned
+## Posting and Editor — Implemented
 
 See [posting.md](./posting.md) and [environment.md](./environment.md).
 
