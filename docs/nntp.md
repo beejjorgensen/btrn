@@ -17,12 +17,16 @@ The initial implementation should support:
 * article metadata retrieval;
 * filtered header and body retrieval;
 * optional authentication;
+* posting followups with `POST`;
 * protocol errors and connection recovery;
 * temporary, in-memory NNTP response data.
 
-Article bodies and decoded article content must not be persisted. All article content should remain in memory for the lifetime of the current application session and be discarded on exit.
+Article bodies and decoded article content must not be persisted. All
+article content should remain in memory for the lifetime of the current
+application session and be discarded on exit.
 
-The initial implementation should not require posting, NNTP compression, streaming extensions, or asynchronous cancellation.
+The initial implementation should not require NNTP compression,
+streaming extensions, or asynchronous cancellation.
 
 ### Transport — Implemented
 
@@ -245,7 +249,24 @@ The default failure policy is:
 * retry a `480` authentication challenge once after authentication;
 * stop immediately on a second authentication failure;
 * reconnecting must repeat greeting, capabilities, and authentication startup;
-* selection or read-state mutations must not occur before a successful operation result.
+* selection or read-state mutations must not occur before a successful operation result;
+* `POST` is never retried automatically, either directly or after a reconnect. The user resends from the posting menu, and the resend reuses the article's generated `Message-ID` (see [posting.md](./posting.md)).
+
+### Posting — Planned
+
+Posting uses the `POST` command:
+
+1. Send `POST`. `340` means send the article; `440` means posting is not
+   permitted.
+2. Send the article headers, a blank line, and the body, with CRLF line
+   endings. Any line beginning with `.` gets an extra leading `.`
+   (dot-stuffing). End with a line containing only `.`.
+3. `240` means the article was received; `441` means posting failed.
+
+`440`, `441`, and transport failures are returned as typed results, with
+the server response text kept for display. Fake-server fixtures should
+cover `340`/`240` success, `440`, `441`, dot-stuffed lines, and a
+disconnect during the article transfer.
 
 ### Concurrency and Lifecycle — In progress
 
@@ -293,6 +314,10 @@ Logs must not contain:
 * raw authentication arguments;
 * private article bodies;
 * user configuration secrets.
+
+The server's response text for a failed `POST` (`440` or `441`) may be
+shown to the user, with control characters replaced and limited to one
+line, but it must not be logged.
 
 ### Server Interoperability — In progress
 

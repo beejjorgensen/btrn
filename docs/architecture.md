@@ -43,6 +43,10 @@ read or write files or directly issue NNTP commands.
 - [Decoder](./decoding.md): raw article parsing, MIME, charsets, and decoding
   diagnostics.
 - [Persistence](./persistence.md): configuration and newsrc storage.
+- [Environment](./environment.md): environment variables that override
+  configuration.
+- [Posting](./posting.md): followup composition, editor hand-off, header
+  checks, and sending.
 - [Terminal screens](./screens.md): selector and article-view layouts,
   interactions, and key bindings.
 - [Runtime and commands](./runtime.md): asynchronous implementation questions,

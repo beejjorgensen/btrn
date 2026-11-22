@@ -10,12 +10,12 @@ the linked documents in [docs/](docs/).
 - NNTP protocol code must not depend on Crossterm or terminal state. Rendering code must not open sockets or read/write files.
 - Prefer explicit small types and ordinary functions. Do not add traits, plugins, dependency-injection containers, or configuration solely for hypothetical reuse.
 - Avoid new third-party crates unless needed. Crossterm is the intended terminal library; Tokio is not required for the initial synchronous implementation.
-- Security and privacy are mandatory: never log or persist passwords, usernames intended as sensitive, authentication arguments, or article bodies.
+- Security and privacy are mandatory: never log or persist passwords, usernames intended as sensitive, authentication arguments, or article bodies. The one exception is the temporary posting composition file specified in `docs/posting.md`. A failed `POST`'s server response text may be shown to the user but never logged.
 - Apply bounded timeouts to network operations. Do not silently fall back from TLS to plaintext.
 - Preserve typed protocol failures and raw article bytes until the appropriate decoder/model boundary.
 - Make state and key-handling transitions testable without a live socket or terminal.
 - Mark article read only after presentation in article view or through an explicit mark-read operation.
-- Use the server article number and group for newsrc state. Never persist article bodies, overview rows, headers, or thread structures.
+- Use the server article number and group for newsrc state. Never persist article bodies, overview rows, headers, or thread structures (except the temporary posting composition file).
 - Keep the full specification in `docs/`, not in always-loaded agent instructions.
 
 ## Rust conventions

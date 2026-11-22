@@ -12,29 +12,71 @@ Status labels are defined in the [documentation index](./README.md).
 * `port`: server port.
 * `use_tls`: whether to use TLS.
 * `username`, `password`: optional authentication values.
-* `password_command`: optional structured command and argument list used to obtain a password. The executable and each argument are stored literally; no shell is invoked.
-* `editor`: effective editor command.
+* `password_command`: optional command and argument list used to obtain a password.
+* `editor`: optional editor command used when posting; the program is
+  found through `PATH`. Default: `vim`.
 * `config_dir`: normally `~/.config/btrn`.
 * `newsrc_path`: normally `~/.config/btrn/newsrc`.
 * `connect_timeout`: NNTP TCP/TLS connection timeout in seconds. Default: `10`.
 * `read_timeout`: NNTP socket read/write inactivity timeout in seconds. Default: `30`.
 * `initial_overview_limit`: maximum number of newest unread article numbers to load when initially entering a group. Default: `10,000`.
 * `overview_chunk_size`: maximum range requested in one XOVER call. Default: `1,000`.
+* `display_name`: optional display name for the `From:` line when
+  posting, for example `"Example Name"`.
+* `display_email`: optional address for the `From:` line when posting,
+  for example `"user@example.com"`.
+* `organization`: optional `Organization:` value when posting, for
+  example `"Yoyodyne Industries"`.
 
-Passwords should be read at connection time and should not be written to disk. Password resolution should produce either a clear authentication error or a usable password.
+How missing `display_name` or `display_email` values affect the `From:`
+line is specified in [posting.md](./posting.md).
 
-The initial configuration file is `~/.config/btrn/config.toml` and accepts `server`, `port`, `use_tls`, `username`, `password`, `password_command`, `editor`, `connect_timeout`, `read_timeout`, `initial_overview_limit`, and `overview_chunk_size`. The file is parsed as standard TOML with the `toml` crate, so any TOML string form, comments, and multi-line arrays are accepted; `password_command` is an array of strings, `port` must be 1-65535, and timeouts and overview sizes are non-negative integers. Only these top-level keys are accepted: unknown keys and tables are errors, and a repeated key is an error rather than overriding the earlier value. Configuration errors report only a category (syntax, unknown key, or invalid value) and line number; they never include config text or values, since the file may contain a password. The CLI host, port, and `--plaintext` option override their file values; `BTRN_EDITOR` then `EDITOR` override the file's editor. Credentials are configured only in the file in this initial version. Configure exactly one of `password` and `password_command` when `username` is set. The password command is executed directly, without a shell, only when credentials are resolved.
+Passwords should be read at connection time and should not be written to
+disk. Password resolution should produce either a clear authentication
+error or a usable password.
+
+The initial configuration file is `~/.config/btrn/config.toml` and
+accepts the variables listed above. The file is parsed as standard TOML
+with the `toml` crate, so any TOML string form, comments, and multi-line
+arrays are accepted; `port` must be 1-65535, and timeouts and overview
+sizes are non-negative integers. Only these top-level keys are accepted:
+unknown keys and tables are errors, and a repeated key is an error
+rather than overriding the earlier value. Configuration errors report
+only a category (syntax, unknown key, or invalid value) and line number;
+they never include config text or values, since the file may contain a
+password. The CLI host, port, and `--plaintext` option override their
+file values; the environment variables listed in
+[environment.md](./environment.md) override the editor and organization
+values.
+
+Credentials are configured only in the file in this initial version.
+Configure exactly one of `password` and `password_command` when
+`username` is set. The password command is executed directly, without a
+shell, only when credentials are resolved.
 
 For example:
 
 ```toml
 server = "news.eternal-september.org"
 username = "your-account-name"
-password_command = ["pass", "show", "usenet/eternal-september"]
+password_command = "pass show usenet/eternal-september"
+# or, equivalently:
+# password_command = ["pass", "show", "usenet/eternal-september"]
 ```
 
-After capability discovery, configured credentials trigger authentication even if the server does not list `AUTHINFO`. `AUTHINFO USER` status `281` completes authentication without a password; `381` sends `AUTHINFO PASS`; `480` is returned as an authentication challenge. Authentication failures report status categories only and never include credential arguments or server response text.
+After capability discovery, configured credentials trigger
+authentication even if the server does not list `AUTHINFO`. `AUTHINFO
+USER` status `281` completes authentication without a password; `381`
+sends `AUTHINFO PASS`; `480` is returned as an authentication challenge.
+Authentication failures report status categories only and never include
+credential arguments or server response text.
 
+The `editor` and `password_command` values (and the editor environment
+variables) can be a string like `"code --wait"`. In that case, split the
+string on whitespace, take the first field as the program to launch, and
+pass the rest as arguments. In the config file, they may instead be an
+array of strings, which is used as given, so arguments can contain
+spaces. Do not launch either through the shell.
 
 ## Newsrc state
 

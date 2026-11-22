@@ -6,6 +6,8 @@
 - [NNTP protocol](nntp.md) defines server-facing behavior and wire handling.
 - [Decoder](decoding.md) defines MIME and charset decoding.
 - [Persistence](persistence.md) defines configuration and newsrc storage.
+- [Environment](environment.md) defines environment variables that override configuration.
+- [Posting](posting.md) defines followup composition and sending.
 - [Screen specification](screens.md) describes terminal layouts and interactions.
 - [Runtime and commands](runtime.md) defines command dispatch and lifecycle behavior.
 - [Testing](testing.md) defines test layers and critical journeys.
