@@ -20,3 +20,4 @@ applyTo:
 - Mark an article read only after its first page has been rendered and flushed successfully; paging, redraw, and resize never change read state.
 - Keep pseudo-terminal coverage limited to the critical journeys defined in [testing specification](../../docs/testing.md#critical-e2e-journeys--planned).
 - Screen layouts and key bindings are specified in [screens](../../docs/screens.md).
+- To add or change a key, use the `add-key-binding` skill.

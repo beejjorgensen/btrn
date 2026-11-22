@@ -28,8 +28,8 @@ Skills live in `.github/skills/` (also reachable as `.claude/skills/`).
 | --- | --- | --- |
 | `src/nntp/**`, `src/group_loader.rs`, `tests/fixtures/nntp/**` | [nntp](.github/instructions/nntp.instructions.md) | `nntp-fixtures` |
 | `src/model/**`, `src/thread/**`, `src/state/**`, `src/decoder/**` | [model](.github/instructions/model.instructions.md) | |
-| `src/terminal/**`, `src/main.rs`, `src/cli.rs` | [terminal](.github/instructions/terminal.instructions.md) | `terminal-state-testing` |
-| `src/persistence/**`, `src/config.rs` | [persistence](.github/instructions/persistence.instructions.md) | `newsrc-state` |
+| `src/terminal/**`, `src/main.rs`, `src/cli.rs` | [terminal](.github/instructions/terminal.instructions.md) | `terminal-state-testing`, `add-key-binding` |
+| `src/persistence/**`, `src/config.rs` | [persistence](.github/instructions/persistence.instructions.md) | `add-config-key` |
 | `src/posting/**`, `src/nntp/post.rs`, `src/terminal/posting.rs` | [posting](.github/instructions/posting.instructions.md) | |
 | `docs/**`, `AGENTS.md`, `CLAUDE.md`, `.github/instructions/**`, `.github/skills/**` | [docs](.github/instructions/docs.instructions.md) | |
 
