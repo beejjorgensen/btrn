@@ -117,4 +117,12 @@ mod tests {
             "\u{1b}[7mab\u{fffd}c\u{1b}[0m"
         );
     }
+
+    #[test]
+    fn terminal_line_is_sanitized_and_fitted_to_columns() {
+        assert_eq!(fit_terminal_line("ab\u{1b}cdef", 5), "ab…");
+        assert_eq!(fit_terminal_line("a\u{1b}b", 10), "a�b");
+        assert_eq!(fit_terminal_line("abcdef", 1), "…");
+        assert_eq!(fit_terminal_line("okay", 10), "okay");
+    }
 }

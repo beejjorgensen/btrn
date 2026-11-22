@@ -4,6 +4,7 @@ pub(crate) mod posting;
 pub mod reader;
 mod selector;
 pub(crate) mod session;
+mod thread_selector;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 

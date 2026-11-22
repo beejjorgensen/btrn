@@ -31,7 +31,7 @@ screen-specific arms. Don't rebind them per screen.
 6. **Letters and digits on a selector screen collide with row letters.** If the key is alphanumeric on the thread or newsgroup selector, in either case:
    * exclude it in `selection_letter` in `src/terminal/selector.rs`;
    * add it to the guard in that screen's toggle arm (`letter != 'q'`), since those arms lowercase what they receive, so `Q` collides with `q`;
-   * update `selection_letters_skip_q`, `thread_selector_uses_digits_after_available_letters`, and `letters_and_digits_select_group_rows_after_q_is_skipped`.
+   * update `selection_letters_skip_q`, `thread_selector_uses_digits_after_available_letters` (in `src/terminal/thread_selector.rs`), and `letters_and_digits_select_group_rows_after_q_is_skipped`.
 
    On the article view, letters are free.
 7. Never mark an article read from a key handler unless the operation is an explicit mark-read; presentation marks read on its own.
