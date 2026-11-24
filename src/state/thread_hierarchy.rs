@@ -44,6 +44,8 @@ struct CellSpan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HierarchyGrid {
     rows: Vec<HierarchyRow>,
+    /// Every drawn node, articles and placeholders, in drawing order.
+    cells: Vec<(ThreadRef, CellSpan)>,
     current: Option<CellSpan>,
     current_subject_index: Option<usize>,
 }
@@ -154,6 +156,7 @@ enum Placement {
 /// sibling's subtree, joined by `|`, `|-`, and `\-` connectors.
 pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
     let mut grid = Grid::default();
+    let mut cells = Vec::new();
     let mut current = None;
     let mut current_subject_index = None;
 
@@ -178,7 +181,16 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
         let end = match &node {
             ThreadRef::Missing(_) => {
                 grid.put(row, col, UNRESOLVED_MARKER, false);
-                col + UNRESOLVED_MARKER.len()
+                let end = col + UNRESOLVED_MARKER.len();
+                cells.push((
+                    node.clone(),
+                    CellSpan {
+                        row,
+                        start: col,
+                        end,
+                    },
+                ));
+                end
             }
             ThreadRef::Article(number) => {
                 let number = *number;
@@ -196,12 +208,14 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
                 let end = col + 1 + digits.len();
                 grid.put(row, end, &close.to_string(), is_current);
                 let end = end + 1;
+                let span = CellSpan {
+                    row,
+                    start: col,
+                    end,
+                };
+                cells.push((node.clone(), span));
                 if is_current {
-                    current = Some(CellSpan {
-                        row,
-                        start: col,
-                        end,
-                    });
+                    current = Some(span);
                     current_subject_index = Some(subject_index);
                 }
                 end
@@ -235,6 +249,7 @@ pub fn layout_hierarchy(input: &HierarchyInput<'_>) -> HierarchyGrid {
 
     HierarchyGrid {
         rows: grid.rows,
+        cells,
         current,
         current_subject_index,
     }
@@ -280,6 +295,36 @@ impl HierarchyGrid {
     /// The subject number of the current article, if it is in the thread.
     pub fn current_subject_index(&self) -> Option<usize> {
         self.current_subject_index
+    }
+
+    /// The node drawn nearest straight above the current article: the
+    /// closest earlier row with a cell overlapping the current cell's
+    /// columns. Connectors are not nodes and are passed over.
+    pub fn cell_above(&self) -> Option<ThreadRef> {
+        let current = self.current?;
+        (0..current.row)
+            .rev()
+            .find_map(|row| self.overlapping_cell(row, current))
+    }
+
+    /// Like [`Self::cell_above`], looking at later rows.
+    pub fn cell_below(&self) -> Option<ThreadRef> {
+        let current = self.current?;
+        (current.row + 1..self.rows.len()).find_map(|row| self.overlapping_cell(row, current))
+    }
+
+    /// The cell on `row` overlapping `target`'s columns, preferring the one
+    /// containing `target`'s start column, then the leftmost.
+    fn overlapping_cell(&self, row: usize, target: CellSpan) -> Option<ThreadRef> {
+        let overlapping = || {
+            self.cells.iter().filter(move |(_, span)| {
+                span.row == row && span.start < target.end && target.start < span.end
+            })
+        };
+        overlapping()
+            .find(|(_, span)| span.start <= target.start && target.start < span.end)
+            .or_else(|| overlapping().min_by_key(|(_, span)| span.start))
+            .map(|(node, _)| node.clone())
     }
 
     fn width(&self) -> usize {
@@ -495,6 +540,85 @@ mod tests {
         assert_eq!(
             build_hierarchy(&state, "comp.test", 99, 1, None),
             Err(StateError::ThreadNotLoaded)
+        );
+    }
+
+    fn number(node: Option<ThreadRef>) -> Option<u64> {
+        match node? {
+            ThreadRef::Article(number) => Some(number),
+            ThreadRef::Missing(_) => panic!("expected an article"),
+        }
+    }
+
+    #[test]
+    fn vertical_neighbors_are_the_nearest_cells_straight_up_and_down() {
+        // [1]+-(1)+-(1)      1, 2, 3
+        //    |    \-(1)      4
+        //    |-(1)           5
+        //    \-(1)--(1)      6, 7
+        let state = branched();
+        let neighbors = |current| {
+            let grid = build_hierarchy(&state, "comp.test", 1, current, None).unwrap();
+            (number(grid.cell_above()), number(grid.cell_below()))
+        };
+        assert_eq!(neighbors(1), (None, None));
+        assert_eq!(neighbors(2), (None, Some(5)));
+        assert_eq!(neighbors(3), (None, Some(4)));
+        assert_eq!(neighbors(4), (Some(3), Some(7)));
+        assert_eq!(neighbors(5), (Some(2), Some(6)));
+        assert_eq!(neighbors(6), (Some(5), None));
+        assert_eq!(neighbors(7), (Some(4), None));
+    }
+
+    #[test]
+    fn vertical_neighbors_follow_drawn_columns_when_numbers_widen_cells() {
+        let state = branched();
+        let tree = &state.groups["comp.test"].threads;
+        // Article 2 is drawn as (12), pushing 3 and 4 one column right of 7.
+        let subject_index = |number| if number == 2 { 12 } else { 1 };
+        let is_read = |_| false;
+        let layout = |current| {
+            layout_hierarchy(&HierarchyInput {
+                tree,
+                root: ThreadRef::Article(1),
+                subject_index: &subject_index,
+                is_read: &is_read,
+                current,
+                previous: None,
+            })
+        };
+        let grid = layout(7);
+        assert_eq!(
+            texts(grid.rows()),
+            [
+                "(1)+-(12)+-(1)",
+                "   |     \\-(1)",
+                "   |-(1)",
+                "   \\-(1)--(1)",
+            ]
+        );
+        assert_eq!(number(grid.cell_above()), Some(4));
+        assert_eq!(number(layout(4).cell_below()), Some(7));
+        assert_eq!(number(layout(5).cell_above()), Some(2));
+    }
+
+    #[test]
+    fn vertical_neighbor_can_be_a_placeholder() {
+        // 3 replies to <b>, which replies to 1 but is not loaded.
+        let mut late = article(3, "c", Some("b"), "Re: topic");
+        late.metadata
+            .references
+            .insert(0, MessageId::parse(b"<a>").unwrap());
+        let state = session(vec![
+            article(1, "a", None, "topic"),
+            article(2, "x", Some("a"), "Re: topic"),
+            late,
+        ]);
+        let grid = build_hierarchy(&state, "comp.test", 1, 2, None).unwrap();
+        assert_eq!(texts(grid.rows()), ["(1)+-[1]", "   \\-(?)--(1)"]);
+        assert_eq!(
+            grid.cell_below(),
+            Some(ThreadRef::Missing(MessageId::parse(b"<b>").unwrap()))
         );
     }
 

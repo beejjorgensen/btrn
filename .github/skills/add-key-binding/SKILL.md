@@ -26,7 +26,7 @@ screen-specific arms. Don't rebind them per screen.
 1. Check [docs/screens.md](../../../docs/screens.md) for the key on that screen and on the others. A key may mean different things on different screens, but it must not shadow an existing binding on its own screen.
 2. Add a variant to the operation enum, with a `///` comment naming the key and its effect when that isn't obvious.
 3. Map it in `operation_for_key` with a `(screen, KeyCode::...)` arm, placed before the catch-all letter arm.
-4. Put the behavior in a `ReaderState` (or selector-state) method that takes `&SessionState` and needs no terminal or socket. Network work goes in a separate function the loop calls, like `fetch_parent_metadata`.
+4. Put the behavior in a `ReaderState` (or selector-state) method that takes `&SessionState` and needs no terminal or socket. Network work goes in a separate function the loop calls, like `fetch_metadata_by_id`.
 5. In the screen loop, call that method and set `redraw` only when something visible changed. For a one-line message, set `reader_state.notice`; it is shown after the prompt on the next redraw and then cleared.
 6. **Letters and digits on a selector screen collide with row letters.** If the key is alphanumeric on the thread or newsgroup selector, in either case:
    * exclude it in `selection_letter` in `src/terminal/selector.rs`;
@@ -36,7 +36,7 @@ screen-specific arms. Don't rebind them per screen.
    On the article view, letters are free.
 7. Never mark an article read from a key handler unless the operation is an explicit mark-read; presentation marks read on its own.
 8. Test, in the `reader.rs` or `group_selector.rs` tests module:
-   * dispatch: the key maps to the operation on its screen and to `Ignore` elsewhere, as in `bracket_moves_to_a_loaded_parent_or_names_the_missing_one`;
+   * dispatch: the key maps to the operation on its screen and to `Ignore` elsewhere, as in `thread_motion_keys_map_only_on_the_article_view`;
    * the state method: its result, plus unchanged read state and newsrc where relevant.
 
    See the `terminal-state-testing` skill.

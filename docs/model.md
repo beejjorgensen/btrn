@@ -84,9 +84,10 @@ Two mechanisms load parent metadata:
   They change no read state and do not add threads to the thread selector,
   which shows only threads with unread articles. The count is
   `context_overview_limit` in [persistence.md](./persistence.md).
-* In the article view, `[` on an article whose parent is a placeholder fetches
-  that parent by `Message-ID` (see [nntp.md](./nntp.md)) and adds it to the
-  loaded group, under the article number from its `Xref` header.
+* In the article view, a thread-window move (see [screens.md](./screens.md))
+  that lands on a placeholder fetches that article by `Message-ID` (see
+  [nntp.md](./nntp.md)) and adds it to the loaded group, under the article
+  number from its `Xref` header.
 
 The hierarchy should support:
 

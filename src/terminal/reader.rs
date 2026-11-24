@@ -3,7 +3,7 @@ use crate::model::article::{ArticleMetadata, MessageId, RawArticle};
 use crate::nntp::{ArticleError, NntpSession};
 use crate::posting::PostingSettings;
 use crate::state::article_navigation::ArticleNavigation;
-use crate::state::thread_hierarchy::build_hierarchy;
+use crate::state::thread_hierarchy::{build_hierarchy, HierarchyGrid};
 use crate::state::thread_list::ThreadList;
 use crate::state::{LoadedArticle, SessionState, StateError};
 use crate::terminal::article_view::{
@@ -33,9 +33,10 @@ pub enum ReaderOperation {
     NextUnreadArticle,
     PreviousUnreadArticle,
     Followup,
-    /// `[`: go to the current article's parent, fetching it by message ID
-    /// when it is not loaded.
-    ParentArticle,
+    /// `[`, `]`, `(`, `)`, and the arrow keys: move through the thread
+    /// window's graph, fetching a placeholder by message ID when the move
+    /// lands on one.
+    ThreadMove(ThreadMotion),
     Redraw,
     /// Ctrl-C: exit the program from any screen.
     Interrupt,
@@ -62,7 +63,18 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
         (ReaderScreen::Article, KeyCode::Char('F')) => ReaderOperation::Followup,
-        (ReaderScreen::Article, KeyCode::Char('[')) => ReaderOperation::ParentArticle,
+        (ReaderScreen::Article, KeyCode::Char('[') | KeyCode::Left) => {
+            ReaderOperation::ThreadMove(ThreadMotion::Parent)
+        }
+        (ReaderScreen::Article, KeyCode::Char(']') | KeyCode::Right) => {
+            ReaderOperation::ThreadMove(ThreadMotion::FirstChild)
+        }
+        (ReaderScreen::Article, KeyCode::Char('(') | KeyCode::Up) => {
+            ReaderOperation::ThreadMove(ThreadMotion::PreviousSibling)
+        }
+        (ReaderScreen::Article, KeyCode::Char(')') | KeyCode::Down) => {
+            ReaderOperation::ThreadMove(ThreadMotion::NextSibling)
+        }
         (ReaderScreen::Threads, KeyCode::Char(letter))
             if letter.is_ascii_alphanumeric() && letter != 'q' =>
         {
@@ -102,17 +114,58 @@ pub struct ReaderState {
     notice: Option<&'static str>,
 }
 
-/// Where `[` leads from the current article.
+/// A move through the thread window's graph from the current article.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadMotion {
+    /// `[` or Left: the parent, which may be on an earlier row.
+    Parent,
+    /// `]` or Right: the first reply, on the same row.
+    FirstChild,
+    /// `(` or Up: the nearest node drawn straight above.
+    PreviousSibling,
+    /// `)` or Down: the nearest node drawn straight below.
+    NextSibling,
+}
+
+impl ThreadMotion {
+    /// The notice shown when the move would leave the graph.
+    fn off_graph_notice(self) -> &'static str {
+        match self {
+            Self::Parent => "There is no parent article prior to this one.",
+            Self::FirstChild => "This is the last leaf in this tree.",
+            Self::PreviousSibling => "This article has no previous sibling.",
+            Self::NextSibling => "This article has no next sibling.",
+        }
+    }
+
+    /// The notice shown when the target placeholder cannot be fetched.
+    fn unavailable_notice(self) -> &'static str {
+        match self {
+            Self::Parent => "Parent article is not available.",
+            _ => "Article is not available.",
+        }
+    }
+}
+
+/// Where a [`ThreadMotion`] leads from the current article.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ParentTarget {
-    /// The article is a thread root.
+pub(crate) enum MoveTarget {
+    /// The move leaves the graph.
     None,
     Loaded(u64),
-    /// The parent is a placeholder for an article that is not loaded.
+    /// The target is a placeholder for an article that is not loaded.
     Missing(MessageId),
 }
 
-pub(crate) const PARENT_UNAVAILABLE: &str = "Parent article is not available.";
+impl From<Option<ThreadRef>> for MoveTarget {
+    fn from(node: Option<ThreadRef>) -> Self {
+        match node {
+            None => Self::None,
+            Some(ThreadRef::Article(number)) => Self::Loaded(number),
+            Some(ThreadRef::Missing(id)) => Self::Missing(id),
+        }
+    }
+}
 
 /// The decoded article on screen, kept in memory only so paging and redraws do
 /// not refetch it or mark it read again.
@@ -246,18 +299,41 @@ impl ReaderState {
         Ok(())
     }
 
-    pub(crate) fn parent_target(&self, state: &SessionState) -> ParentTarget {
+    pub(crate) fn move_target(&self, state: &SessionState, motion: ThreadMotion) -> MoveTarget {
         let Some(article_number) = self.selected_article_number() else {
-            return ParentTarget::None;
+            return MoveTarget::None;
         };
         let Some(group) = state.groups.get(&self.threads.group_name) else {
-            return ParentTarget::None;
+            return MoveTarget::None;
         };
-        match group.threads.parent(&ThreadRef::Article(article_number)) {
-            None => ParentTarget::None,
-            Some(ThreadRef::Article(parent)) => ParentTarget::Loaded(parent),
-            Some(ThreadRef::Missing(id)) => ParentTarget::Missing(id),
-        }
+        let current = ThreadRef::Article(article_number);
+        let node = match motion {
+            ThreadMotion::Parent => group.threads.parent(&current),
+            ThreadMotion::FirstChild => group.threads.children(&current).first().cloned(),
+            ThreadMotion::PreviousSibling => self
+                .hierarchy(state, article_number)
+                .and_then(|grid| grid.cell_above()),
+            ThreadMotion::NextSibling => self
+                .hierarchy(state, article_number)
+                .and_then(|grid| grid.cell_below()),
+        };
+        node.into()
+    }
+
+    /// The thread window's graph with `article_number` current.
+    fn hierarchy(&self, state: &SessionState, article_number: u64) -> Option<HierarchyGrid> {
+        let root = self
+            .article_navigation
+            .as_ref()
+            .and_then(ArticleNavigation::root_article_number)?;
+        build_hierarchy(
+            state,
+            &self.threads.group_name,
+            root,
+            article_number,
+            self.previous_article,
+        )
+        .ok()
     }
 
     pub(crate) fn select_article(&mut self, article_number: u64) -> bool {
@@ -266,11 +342,11 @@ impl ReaderState {
             .is_some_and(|navigation| navigation.select_article(article_number))
     }
 
-    /// Adds a parent fetched by message ID to the group and selects it. The
+    /// Adds an article fetched by message ID to the group and selects it. The
     /// thread is rebuilt because the new article can replace placeholders
     /// and join the current thread to others. Loading it changes no read
     /// state.
-    pub(crate) fn adopt_fetched_parent(
+    pub(crate) fn adopt_fetched_article(
         &mut self,
         state: &mut SessionState,
         article_number: u64,
@@ -365,20 +441,7 @@ impl ReaderState {
             more_unread: self.more_unread(state, article_number),
             group_last_article: self.group_last_article,
         };
-        let hierarchy = self
-            .article_navigation
-            .as_ref()
-            .and_then(ArticleNavigation::root_article_number)
-            .and_then(|root| {
-                build_hierarchy(
-                    state,
-                    &self.threads.group_name,
-                    root,
-                    article_number,
-                    self.previous_article,
-                )
-                .ok()
-            });
+        let hierarchy = self.hierarchy(state, article_number);
         let layout = match &hierarchy {
             Some(hierarchy) => ArticleLayout::with_hierarchy(&context, article, hierarchy, width),
             None => ArticleLayout::new(&context, article, width),
@@ -636,16 +699,19 @@ pub(crate) fn run_interactive_in_session(
                     }
                 }
             }
-            ReaderOperation::ParentArticle => match reader_state.parent_target(state) {
-                ParentTarget::None => {}
-                ParentTarget::Loaded(parent) => redraw = reader_state.select_article(parent),
-                ParentTarget::Missing(id) => {
+            ReaderOperation::ThreadMove(motion) => match reader_state.move_target(state, motion) {
+                MoveTarget::None => {
+                    reader_state.notice = Some(motion.off_graph_notice());
+                    redraw = true;
+                }
+                MoveTarget::Loaded(number) => redraw = reader_state.select_article(number),
+                MoveTarget::Missing(id) => {
                     let group = reader_state.threads.group_name.clone();
-                    match fetch_parent_metadata(session, &group, &id)? {
+                    match fetch_metadata_by_id(session, &group, &id)? {
                         Some((number, metadata)) => reader_state
-                            .adopt_fetched_parent(state, number, metadata)
+                            .adopt_fetched_article(state, number, metadata)
                             .map_err(ReaderError::State)?,
-                        None => reader_state.notice = Some(PARENT_UNAVAILABLE),
+                        None => reader_state.notice = Some(motion.unavailable_notice()),
                     }
                     redraw = true;
                 }
@@ -659,7 +725,7 @@ pub(crate) fn run_interactive_in_session(
 
 /// The group article number and metadata of the article with `id`, or
 /// `None` when the server no longer has it or it is not in `group`.
-fn fetch_parent_metadata(
+fn fetch_metadata_by_id(
     session: &mut NntpSession,
     group: &str,
     id: &MessageId,
@@ -1084,16 +1150,157 @@ mod tests {
     }
 
     #[test]
-    fn bracket_moves_to_a_loaded_parent_or_names_the_missing_one() {
+    fn thread_motion_keys_map_only_on_the_article_view() {
+        let bindings = [
+            (KeyCode::Char('['), ThreadMotion::Parent),
+            (KeyCode::Left, ThreadMotion::Parent),
+            (KeyCode::Char(']'), ThreadMotion::FirstChild),
+            (KeyCode::Right, ThreadMotion::FirstChild),
+            (KeyCode::Char('('), ThreadMotion::PreviousSibling),
+            (KeyCode::Up, ThreadMotion::PreviousSibling),
+            (KeyCode::Char(')'), ThreadMotion::NextSibling),
+            (KeyCode::Down, ThreadMotion::NextSibling),
+        ];
+        for (code, motion) in bindings {
+            assert_eq!(
+                operation_for_key(ReaderScreen::Article, key(code)),
+                ReaderOperation::ThreadMove(motion)
+            );
+            assert_eq!(
+                operation_for_key(ReaderScreen::Threads, key(code)),
+                ReaderOperation::Ignore
+            );
+        }
+        // Shifted punctuation arrives with the Shift modifier.
         assert_eq!(
-            operation_for_key(ReaderScreen::Article, key(KeyCode::Char('['))),
-            ReaderOperation::ParentArticle
+            operation_for_key(
+                ReaderScreen::Article,
+                KeyEvent::new(KeyCode::Char('('), KeyModifiers::SHIFT)
+            ),
+            ReaderOperation::ThreadMove(ThreadMotion::PreviousSibling)
+        );
+    }
+
+    #[test]
+    fn thread_motions_follow_the_graph_and_leave_read_state_alone() {
+        // [10]+-(11)+-(12)
+        //     |     \-(13)
+        //     \-(14)
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    loaded_article(10, "root", None),
+                    loaded_article(11, "a", Some("root")),
+                    loaded_article(12, "b", Some("a")),
+                    loaded_article(13, "c", Some("a")),
+                    loaded_article(14, "d", Some("root")),
+                ],
+            )
+            .unwrap();
+        let mut reader = reader_for(&state);
+        reader.start_reading(&state).unwrap();
+        let target = |reader: &ReaderState, motion| reader.move_target(&state, motion);
+
+        assert_eq!(reader.selected_article_number(), Some(10));
+        assert_eq!(target(&reader, ThreadMotion::Parent), MoveTarget::None);
+        assert_eq!(
+            target(&reader, ThreadMotion::FirstChild),
+            MoveTarget::Loaded(11)
         );
         assert_eq!(
-            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('['))),
-            ReaderOperation::Ignore
+            target(&reader, ThreadMotion::PreviousSibling),
+            MoveTarget::None
+        );
+        assert_eq!(target(&reader, ThreadMotion::NextSibling), MoveTarget::None);
+
+        assert!(reader.select_article(12));
+        assert_eq!(
+            target(&reader, ThreadMotion::Parent),
+            MoveTarget::Loaded(11)
+        );
+        assert_eq!(target(&reader, ThreadMotion::FirstChild), MoveTarget::None);
+        assert_eq!(
+            target(&reader, ThreadMotion::NextSibling),
+            MoveTarget::Loaded(13)
         );
 
+        assert!(reader.select_article(13));
+        assert_eq!(
+            target(&reader, ThreadMotion::PreviousSibling),
+            MoveTarget::Loaded(12)
+        );
+        assert_eq!(target(&reader, ThreadMotion::NextSibling), MoveTarget::None);
+        // Left from a later reply climbs to its parent's row.
+        assert_eq!(
+            target(&reader, ThreadMotion::Parent),
+            MoveTarget::Loaded(11)
+        );
+
+        assert!(reader.select_article(14));
+        assert_eq!(
+            target(&reader, ThreadMotion::PreviousSibling),
+            MoveTarget::Loaded(11)
+        );
+        assert_eq!(
+            target(&reader, ThreadMotion::Parent),
+            MoveTarget::Loaded(10)
+        );
+
+        assert!((10..=14).all(|number| !state.is_read("comp.test", number)));
+        assert!(state.newsrc.entry("comp.test").is_none());
+    }
+
+    #[test]
+    fn thread_motions_can_land_on_a_placeholder() {
+        // 12 replies to <gone>, a missing reply to 10.
+        let mut late = loaded_article(12, "late", Some("gone"));
+        late.metadata
+            .references
+            .insert(0, MessageId::parse(b"<root>").unwrap());
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [
+                    loaded_article(10, "root", None),
+                    loaded_article(11, "a", Some("root")),
+                    late,
+                ],
+            )
+            .unwrap();
+        let mut reader = reader_for(&state);
+        reader.start_reading(&state).unwrap();
+        let gone = MoveTarget::Missing(MessageId::parse(b"<gone>").unwrap());
+        assert!(reader.select_article(11));
+        assert_eq!(reader.move_target(&state, ThreadMotion::NextSibling), gone);
+        assert!(reader.select_article(12));
+        assert_eq!(reader.move_target(&state, ThreadMotion::Parent), gone);
+    }
+
+    #[test]
+    fn off_graph_notices_name_the_direction() {
+        assert_eq!(
+            ThreadMotion::Parent.off_graph_notice(),
+            "There is no parent article prior to this one."
+        );
+        assert_eq!(
+            ThreadMotion::FirstChild.off_graph_notice(),
+            "This is the last leaf in this tree."
+        );
+        assert_eq!(
+            ThreadMotion::PreviousSibling.off_graph_notice(),
+            "This article has no previous sibling."
+        );
+        assert_eq!(
+            ThreadMotion::NextSibling.off_graph_notice(),
+            "This article has no next sibling."
+        );
+    }
+
+    #[test]
+    fn parent_motion_moves_to_a_loaded_parent_or_names_the_missing_one() {
         let mut state = SessionState::default();
         state
             .load_articles(
@@ -1108,12 +1315,15 @@ mod tests {
         let mut reader = reader_for(&state);
         reader.start_reading(&state).unwrap();
         assert_eq!(reader.selected_article_number(), Some(6));
-        assert_eq!(reader.parent_target(&state), ParentTarget::Loaded(5));
+        assert_eq!(
+            reader.move_target(&state, ThreadMotion::Parent),
+            MoveTarget::Loaded(5)
+        );
         assert!(reader.select_article(5));
         assert_eq!(reader.selected_article_number(), Some(5));
         assert_eq!(
-            reader.parent_target(&state),
-            ParentTarget::Missing(MessageId::parse(b"<expired>").unwrap())
+            reader.move_target(&state, ThreadMotion::Parent),
+            MoveTarget::Missing(MessageId::parse(b"<expired>").unwrap())
         );
     }
 
@@ -1129,7 +1339,7 @@ mod tests {
         state.load_articles("comp.test", [child]).unwrap();
         let mut reader = reader_for(&state);
         reader.start_reading(&state).unwrap();
-        let ParentTarget::Missing(id) = reader.parent_target(&state) else {
+        let MoveTarget::Missing(id) = reader.move_target(&state, ThreadMotion::Parent) else {
             panic!("parent should be a placeholder");
         };
         assert_eq!(id, MessageId::parse(b"<parent>").unwrap());
@@ -1137,14 +1347,14 @@ mod tests {
         let mut parent = loaded_article(3, "parent", Some("root"));
         parent.metadata.subject = Some(b"Re: topic".to_vec());
         reader
-            .adopt_fetched_parent(&mut state, 3, parent.metadata)
+            .adopt_fetched_article(&mut state, 3, parent.metadata)
             .unwrap();
         assert_eq!(reader.selected_article_number(), Some(3));
         let navigation = reader.article_navigation.as_ref().unwrap();
         assert_eq!(navigation.article_numbers(), [3, 7]);
         assert_eq!(
-            reader.parent_target(&state),
-            ParentTarget::Missing(MessageId::parse(b"<root>").unwrap())
+            reader.move_target(&state, ThreadMotion::Parent),
+            MoveTarget::Missing(MessageId::parse(b"<root>").unwrap())
         );
         assert!(!state.is_read("comp.test", 3));
         assert!(state.newsrc.entry("comp.test").is_none());

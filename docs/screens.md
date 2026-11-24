@@ -289,11 +289,25 @@ Keys:
 * `p`: go back to the previous unread article in the current thread
 * `q`, Backspace, or `Esc`: return to the thread selector
 * `r`: redraw
-* `[`: go to the parent of the current article. If the parent is not loaded,
-  it is fetched by `Message-ID` and added to the thread (see
-  [model.md](./model.md)). If the server no longer has it, the prompt is
-  followed by `Parent article is not available.` until the next redraw. On
-  a thread root, `[` does nothing.
+* `[` or Left: go to the parent of the current article, which may be on an
+  earlier row of the thread hierarchy. On a thread root the prompt is followed
+  by `There is no parent article prior to this one.`
+* `]` or Right: go to the current article's first reply, the next node on its
+  row. With no replies the prompt is followed by
+  `This is the last leaf in this tree.`
+* `(` or Up: go to the nearest node drawn straight above the current article:
+  the closest earlier row with a node whose cell overlaps the current cell's
+  columns. Connectors are passed over. With none the prompt is followed by
+  `This article has no previous sibling.`
+* `)` or Down: like `(`, looking at later rows. With none the prompt is
+  followed by `This article has no next sibling.`
+
+  These four keys work on every page of the article. When a move lands on a
+  `(?)` placeholder, the missing article is fetched by `Message-ID` and added
+  to the thread (see [model.md](./model.md)). If the server no longer has it,
+  the prompt is followed by `Parent article is not available.` for `[` or
+  `Article is not available.` for the others. Each notice lasts until the next
+  redraw, and the current article stays selected.
 * `F`: post a followup that quotes this article (see [posting.md](./posting.md))
 * Ctrl-C: exit the program (on every screen), saving newsrc
 
