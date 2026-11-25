@@ -256,6 +256,13 @@ the header is missing. `Date` is currently shown as the decoded header value
 without reformatting. The Subject header is shown as `[N] subject`, where `N`
 is the subject's number in the thread hierarchy.
 
+After `v`, the header area instead shows every header as `Name: value` in the
+order received, with encoded words decoded. The Subject header has no `[N]`,
+and `Lines` appears only if the article has that header. Every header row
+wraps with the `+   ` prefix instead of being truncated, at the narrowed width
+beside the thread window and at the full width elsewhere. This all-headers
+mode lasts until Ctrl-R or until another article is shown.
+
 The top line, headers, one blank line, and body form one continuous display
 that is paged as a whole, with the prompt on the line below it. Each Space
 scrolls the display up by the number of new rows it reveals, at most one
@@ -281,8 +288,8 @@ through the current page. On the last page the prompt is
 `End of art N (of M) [npq]`, where M is the group's highest article number
 from `GROUP`.
 
-The article is marked read after its first page is presented. Paging, `r`, and
-terminal resizes re-render the in-memory article at the new size without
+The article is marked read after its first page is presented. Paging, `r`,
+Ctrl-R, `v`, and terminal resizes re-render the in-memory article at the new size without
 fetching it again or changing read state.
 
 Keys:
@@ -293,6 +300,9 @@ Keys:
 * `p`: go back to the previous unread article in the current thread
 * `q`, Backspace, or `Esc`: return to the thread selector
 * `r`: redraw
+* Ctrl-R: restart the article from its first page with the usual headers, as
+  if just arrived
+* `v`: restart the article from its first page showing all headers
 * `[` or Left: go to the parent of the current article, which may be on an
   earlier row of the thread hierarchy. On a thread root the prompt is followed
   by `There is no parent article prior to this one.`

@@ -8,6 +8,7 @@ use crate::state::thread_list::ThreadList;
 use crate::state::{LoadedArticle, SessionState, StateError};
 use crate::terminal::article_view::{
     present_article, prompt_line, render_article_page, ArticleLayout, ArticleViewContext,
+    HeaderMode,
 };
 use crate::terminal::selector;
 use crate::terminal::session::TerminalSession;
@@ -15,7 +16,7 @@ use crate::terminal::thread_selector::{
     assigned_thread_letter, page_thread_row_y, render_thread_list, thread_pages, ThreadPage,
 };
 use crate::thread::ThreadRef;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
@@ -43,6 +44,9 @@ pub enum ReaderOperation {
     /// lands on one.
     ThreadMove(ThreadMotion),
     Redraw,
+    /// Ctrl-R (`Filtered`) or `v` (`All`): show the in-memory article again
+    /// from its first page with those headers.
+    RestartArticle(HeaderMode),
     /// Ctrl-C: exit the program from any screen.
     Interrupt,
     Ignore,
@@ -67,7 +71,15 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Article, KeyCode::Char('n')) => ReaderOperation::NextUnreadArticle,
         (ReaderScreen::Article, KeyCode::Char('p')) => ReaderOperation::PreviousUnreadArticle,
         (ReaderScreen::Article, KeyCode::Backspace) => ReaderOperation::CloseArticle,
+        (ReaderScreen::Article, KeyCode::Char('r'))
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            ReaderOperation::RestartArticle(HeaderMode::Filtered)
+        }
         (ReaderScreen::Article, KeyCode::Char('r')) => ReaderOperation::Redraw,
+        (ReaderScreen::Article, KeyCode::Char('v')) => {
+            ReaderOperation::RestartArticle(HeaderMode::All)
+        }
         (ReaderScreen::Article, KeyCode::Char('F')) => ReaderOperation::Followup,
         (ReaderScreen::Article, KeyCode::Char('[') | KeyCode::Left) => {
             ReaderOperation::ThreadMove(ThreadMotion::Parent)
@@ -118,6 +130,9 @@ pub struct ReaderState {
     previous_article: Option<u64>,
     /// A one-time message shown after the article prompt on the next redraw.
     notice: Option<&'static str>,
+    /// Headers shown for the current article; each new article starts
+    /// filtered.
+    header_mode: HeaderMode,
 }
 
 /// A move through the thread window's graph from the current article.
@@ -213,6 +228,7 @@ impl ReaderState {
             current_article: None,
             previous_article: None,
             notice: None,
+            header_mode: HeaderMode::Filtered,
         }
     }
 
@@ -456,6 +472,7 @@ impl ReaderState {
             article_number,
             more_unread: self.more_unread(state, article_number),
             group_last_article: self.group_last_article,
+            header_mode: self.header_mode,
         };
         let hierarchy = self.hierarchy(state, article_number);
         let layout = match &hierarchy {
@@ -481,6 +498,15 @@ impl ReaderState {
             article,
         });
         self.article_page = 0;
+        self.header_mode = HeaderMode::Filtered;
+    }
+
+    /// Returns to the current article's first page with `header_mode`
+    /// headers, as if just arrived, without refetching or changing read
+    /// state.
+    fn restart_article(&mut self, header_mode: HeaderMode) {
+        self.article_page = 0;
+        self.header_mode = header_mode;
     }
 
     fn advance_to_next_thread(&mut self, state: &SessionState) -> Result<bool, ReaderStateError> {
@@ -739,6 +765,10 @@ pub(crate) fn run_interactive_in_session(
             },
             ReaderOperation::Interrupt => return Ok(ReaderExit::QuitApplication),
             ReaderOperation::Redraw => redraw = true,
+            ReaderOperation::RestartArticle(header_mode) => {
+                reader_state.restart_article(header_mode);
+                redraw = true;
+            }
             ReaderOperation::Ignore => {}
         }
     }
@@ -812,7 +842,6 @@ impl From<io::Error> for ReaderError {
 mod tests {
     use super::*;
     use crate::state::thread_list::ThreadList;
-    use crossterm::event::KeyModifiers;
 
     fn loaded_article(number: u64, id: &str, parent: Option<&str>) -> LoadedArticle {
         LoadedArticle {
@@ -922,6 +951,53 @@ mod tests {
                 ReaderOperation::Interrupt
             );
         }
+    }
+
+    #[test]
+    fn control_r_and_v_restart_the_article_with_filtered_or_all_headers() {
+        let control_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, control_r),
+            ReaderOperation::RestartArticle(HeaderMode::Filtered)
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Char('r'))),
+            ReaderOperation::Redraw
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Char('v'))),
+            ReaderOperation::RestartArticle(HeaderMode::All)
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('v'))),
+            ReaderOperation::ToggleThread('v')
+        );
+
+        let data = thread_session();
+        let mut reader = reader_for(&data);
+        reader.marked_threads.insert(10);
+        reader.start_reading(&data).unwrap();
+        reader.set_current_article(10, decoded_body("a\nb\nc"));
+        assert!(reader.next_article_page(3));
+
+        reader.restart_article(HeaderMode::All);
+        assert_eq!(reader.article_page, 0);
+        let (context, _) = reader.article_view(&data, 10, 80).unwrap();
+        assert_eq!(context.header_mode, HeaderMode::All);
+        // Restarting reuses the article in memory and marks nothing read.
+        assert!(reader.cached_article(10).is_some());
+        assert!(!data.is_read("comp.test", 10));
+
+        assert!(reader.next_article_page(3));
+        reader.restart_article(HeaderMode::Filtered);
+        assert_eq!(reader.article_page, 0);
+        assert_eq!(reader.header_mode, HeaderMode::Filtered);
+
+        // Verbose lasts only for the article it was asked for.
+        reader.restart_article(HeaderMode::All);
+        reader.advance_article(&data).unwrap();
+        reader.set_current_article(11, decoded_body("x"));
+        assert_eq!(reader.header_mode, HeaderMode::Filtered);
     }
 
     fn decoded_body(body: &str) -> decoder::DecodedArticle {

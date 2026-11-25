@@ -225,6 +225,7 @@ fn present_one_article(
         article_number,
         more_unread,
         group_last_article: group.last_article,
+        header_mode: Default::default(),
     };
     let layout = terminal::article_view::ArticleLayout::new(&context, &decoded, width);
     let mut stdout = io::stdout().lock();

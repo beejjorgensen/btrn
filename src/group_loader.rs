@@ -258,6 +258,7 @@ mod tests {
             article_number: target,
             more_unread: 0,
             group_last_article: selection.last_article,
+            header_mode: Default::default(),
         };
         let layout = crate::terminal::article_view::ArticleLayout::new(&context, &decoded, 80);
         crate::terminal::article_view::present_article(

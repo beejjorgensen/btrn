@@ -32,6 +32,17 @@ pub struct ArticleViewContext<'a> {
     pub more_unread: usize,
     /// The group's highest server article number, from `GROUP`.
     pub group_last_article: u64,
+    pub header_mode: HeaderMode,
+}
+
+/// Which article headers the view shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeaderMode {
+    /// From, Subject, Date, and Lines, each truncated to its row.
+    #[default]
+    Filtered,
+    /// Every header in received order, wrapped rather than truncated.
+    All,
 }
 
 /// Width-dependent layout of the whole article display: the top line,
@@ -49,11 +60,14 @@ pub struct ArticleLayout {
 impl ArticleLayout {
     pub fn new(context: &ArticleViewContext<'_>, article: &DecodedArticle, width: u16) -> Self {
         let mut rows = vec![selector::fit_terminal_line(&top_line(context), width)];
-        rows.extend(
-            article_header_lines(article)
-                .iter()
-                .map(|line| selector::fit_terminal_line(line, width)),
-        );
+        for line in header_lines(article, None, context.header_mode) {
+            match context.header_mode {
+                HeaderMode::Filtered => rows.push(selector::fit_terminal_line(&line, width)),
+                HeaderMode::All => {
+                    rows.extend(wrap_header(&line, rows.len(), |_| usize::from(width)))
+                }
+            }
+        }
         rows.push(String::new());
         rows.extend(body_lines(&article.body, width));
         Self {
@@ -82,10 +96,14 @@ impl ArticleLayout {
         let row_width = |row: usize| if row < HIERARCHY_HEIGHT { narrow } else { full };
 
         let mut lines = vec![top_line(context)];
-        lines.extend(header_lines(article, hierarchy.current_subject_index()));
+        lines.extend(header_lines(
+            article,
+            hierarchy.current_subject_index(),
+            context.header_mode,
+        ));
         let mut rows: Vec<String> = Vec::new();
         for line in &lines {
-            if rows.len() < HIERARCHY_HEIGHT {
+            if rows.len() < HIERARCHY_HEIGHT || context.header_mode == HeaderMode::All {
                 rows.extend(wrap_header(line, rows.len(), row_width));
             } else {
                 rows.push(selector::fit_terminal_line(line, width));
@@ -184,15 +202,23 @@ pub fn wrap_header(
     }
 }
 
-/// Selects the From, Subject, Date, and Lines headers in display order. Lines
-/// falls back to the body line count when the header is absent.
-pub fn article_header_lines(article: &DecodedArticle) -> Vec<String> {
-    header_lines(article, None)
-}
-
-/// Like [`article_header_lines`], but with a subject number the Subject header
-/// is shown as `[N] subject`.
-fn header_lines(article: &DecodedArticle, subject_index: Option<usize>) -> Vec<String> {
+/// The header lines for `mode`. Filtered headers are From, Subject, Date, and
+/// Lines in display order; Lines falls back to the body line count when the
+/// header is absent, and with a subject number the Subject header is shown as
+/// `[N] subject`. All headers are every header as `Name: value` in received
+/// order, with no subject number and no computed Lines.
+fn header_lines(
+    article: &DecodedArticle,
+    subject_index: Option<usize>,
+    mode: HeaderMode,
+) -> Vec<String> {
+    if mode == HeaderMode::All {
+        return article
+            .headers
+            .iter()
+            .map(|header| format!("{}: {}", header.name, header.value.replace('\t', " ")))
+            .collect();
+    }
     let header = |name: &str| {
         article
             .headers
@@ -430,6 +456,7 @@ mod tests {
             article_number: 9,
             more_unread: 3,
             group_last_article: 42,
+            header_mode: HeaderMode::Filtered,
         }
     }
 
@@ -506,7 +533,7 @@ mod tests {
             "body",
         );
         assert_eq!(
-            article_header_lines(&article),
+            header_lines(&article, None, HeaderMode::Filtered),
             [
                 "From: Someone <someone@example.com>",
                 "Subject: Re: topic",
@@ -519,10 +546,17 @@ mod tests {
     #[test]
     fn counts_body_lines_when_lines_header_is_absent() {
         assert_eq!(
-            article_header_lines(&article(&[("Subject", "s")], "a\nb\nc")),
+            header_lines(
+                &article(&[("Subject", "s")], "a\nb\nc"),
+                None,
+                HeaderMode::Filtered
+            ),
             ["Subject: s", "Lines: 3"]
         );
-        assert_eq!(article_header_lines(&article(&[], "")), ["Lines: 0"]);
+        assert_eq!(
+            header_lines(&article(&[], ""), None, HeaderMode::Filtered),
+            ["Lines: 0"]
+        );
     }
 
     #[test]
@@ -696,6 +730,78 @@ mod tests {
         let state = hierarchy_session();
         let grid = build_hierarchy(&state, "comp.test", 1, 9, Some(1)).unwrap();
         ArticleLayout::with_hierarchy(&context("comp.test"), article, &grid, width)
+    }
+
+    fn verbose(group: &str) -> ArticleViewContext<'_> {
+        ArticleViewContext {
+            header_mode: HeaderMode::All,
+            ..context(group)
+        }
+    }
+
+    #[test]
+    fn all_headers_mode_shows_every_header_in_order_and_wraps_long_ones() {
+        let article = article(
+            &[
+                ("Path", "a!b"),
+                ("From", "x@example.invalid"),
+                ("Subject", "topic"),
+                ("Path", "second"),
+                ("References", "<0123456789@example.invalid>"),
+            ],
+            "body",
+        );
+        let layout = ArticleLayout::new(&verbose("comp.test"), &article, 20);
+        assert_eq!(
+            layout.rows(),
+            [
+                "comp.test #9 (3 m…",
+                "Path: a!b",
+                "From: x@example.inva",
+                "+   lid",
+                "Subject: topic",
+                "Path: second",
+                "References: <0123456",
+                "+   789@example.inva",
+                "+   lid>",
+                "",
+                "body",
+            ]
+        );
+        // Filtered mode keeps its selected, truncated headers and Lines.
+        let filtered = ArticleLayout::new(&context("comp.test"), &article, 20);
+        assert_eq!(
+            filtered.rows()[1..5],
+            ["From: x@example.i…", "Subject: topic", "Lines: 1", ""]
+        );
+    }
+
+    #[test]
+    fn all_headers_mode_beside_the_thread_window_omits_the_subject_number() {
+        let headers: Vec<(String, String)> = (1..=8)
+            .map(|index| (format!("X-Header-{index}"), "v".repeat(30)))
+            .collect();
+        let headers: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let mut headers = headers;
+        headers.insert(0, ("Subject", "Re: topic"));
+        let article = article(&headers, "body");
+        let state = hierarchy_session();
+        let grid = build_hierarchy(&state, "comp.test", 1, 9, Some(1)).unwrap();
+        let layout = ArticleLayout::with_hierarchy(&verbose("comp.test"), &article, &grid, 60);
+        let rows = layout.rows();
+        assert_eq!(rows[1], "Subject: Re: topic");
+        // Beside the window rows are 34 columns; below it they use all 60.
+        assert_eq!(rows[2], format!("X-Header-1: {}", "v".repeat(22)));
+        assert_eq!(rows[3], format!("+   {}", "v".repeat(8)));
+        let below: Vec<&String> = rows[HIERARCHY_HEIGHT..]
+            .iter()
+            .filter(|row| row.starts_with("X-Header-"))
+            .collect();
+        assert!(below.iter().all(|row| row.ends_with(&"v".repeat(30))));
+        assert!(!rows.iter().any(|row| row.starts_with("Lines:")));
     }
 
     fn strip_escapes(text: &str) -> String {
