@@ -613,15 +613,7 @@ pub(crate) fn run_interactive_in_session(
                     }
                     if let Some(notice) = notice {
                         let prompt = prompt_line(&context, &layout, page, height);
-                        let used = u16::try_from(prompt.chars().count()).unwrap_or(u16::MAX);
-                        selector::write_line(
-                            &mut terminal.output,
-                            &format!("  {notice}"),
-                            false,
-                            width.saturating_sub(used),
-                            false,
-                        )?;
-                        terminal.output.flush()?;
+                        write_notice(&mut terminal.output, &prompt, notice, width)?;
                     }
                     reader_state.article_page = page;
                 }
@@ -774,6 +766,20 @@ pub(crate) fn run_interactive_in_session(
     }
 }
 
+/// Writes `notice` after the just-drawn `prompt` on the bottom line, cut to
+/// the columns the prompt leaves.
+fn write_notice(output: &mut impl Write, prompt: &str, notice: &str, width: u16) -> io::Result<()> {
+    let used = u16::try_from(prompt.chars().count()).unwrap_or(u16::MAX);
+    selector::write_line(
+        output,
+        &format!("  {notice}"),
+        false,
+        width.saturating_sub(used),
+        false,
+    )?;
+    output.flush()
+}
+
 /// The group article number and metadata of the article with `id`, or
 /// `None` when the server no longer has it or it is not in `group`.
 fn fetch_metadata_by_id(
@@ -873,6 +879,80 @@ mod tests {
 
     fn reader_for(state: &SessionState) -> ReaderState {
         ReaderState::new(ThreadList::from_session(state, "comp.test").unwrap(), 100)
+    }
+
+    #[test]
+    fn notices_follow_the_prompt_within_the_remaining_columns() {
+        let notice = |prompt: &str, width| {
+            let mut output = Vec::new();
+            write_notice(&mut output, prompt, "Article is not available.", width).unwrap();
+            String::from_utf8(output).unwrap()
+        };
+        assert_eq!(notice("--MORE--(50%)", 80), "  Article is not available.");
+        // 30 columns less a 13-column prompt leaves 17, ending in an ellipsis.
+        assert_eq!(notice("--MORE--(50%)", 30), "  Article is not…");
+        assert_eq!(notice("--MORE--(50%)", 13), "");
+    }
+
+    #[test]
+    fn fetching_by_message_id_needs_an_xref_for_this_group() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            stream.write_all(b"200 ready\r\n").unwrap();
+            let replies: [&[u8]; 4] = [
+                b"221 0 <found@x> head\r\nMessage-ID: <found@x>\r\nSubject: found\r\n\
+                  Xref: news.example misc.test:9 comp.test:42\r\n.\r\n",
+                b"430 no such article\r\n",
+                b"221 0 <other@x> head\r\nMessage-ID: <other@x>\r\n\
+                  Xref: news.example misc.test:9\r\n.\r\n",
+                b"500 what\r\n",
+            ];
+            for (id, reply) in ["found", "gone", "other", "broken"].iter().zip(replies) {
+                let mut command = String::new();
+                reader.read_line(&mut command).unwrap();
+                assert_eq!(command, format!("HEAD <{id}@x>\r\n"));
+                stream.write_all(reply).unwrap();
+            }
+        });
+        let mut session = NntpSession::connect(
+            "127.0.0.1",
+            address.port(),
+            false,
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let id = |name: &str| MessageId::parse(format!("<{name}@x>").as_bytes()).unwrap();
+
+        let (number, metadata) = fetch_metadata_by_id(&mut session, "comp.test", &id("found"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(number, 42);
+        assert_eq!(metadata.message_id, Some(id("found")));
+        assert_eq!(metadata.subject.as_deref(), Some(b"found".as_slice()));
+        assert!(fetch_metadata_by_id(&mut session, "comp.test", &id("gone"))
+            .unwrap()
+            .is_none());
+        assert!(
+            fetch_metadata_by_id(&mut session, "comp.test", &id("other"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            fetch_metadata_by_id(&mut session, "comp.test", &id("broken")),
+            Err(ReaderError::Article(ArticleError::UnexpectedStatus {
+                status: 500,
+                ..
+            }))
+        ));
+        server.join().unwrap();
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1021,6 +1101,55 @@ mod tests {
         )
         .unwrap();
         data
+    }
+
+    #[test]
+    fn closing_an_article_hides_fully_read_threads_and_drops_their_marks() {
+        let mut data = thread_session();
+        let mut reader = reader_for(&data);
+        assert_eq!(reader.threads.rows.len(), 2);
+        reader.marked_threads.extend([10, 1]);
+        reader.start_reading(&data).unwrap();
+        for number in [10, 11, 12] {
+            data.mark_article_read("comp.test", number).unwrap();
+        }
+
+        reader.close_article(&data);
+        assert_eq!(reader.screen(), ReaderScreen::Threads);
+        let roots: Vec<u64> = reader
+            .threads
+            .rows
+            .iter()
+            .map(|row| row.root_article_number)
+            .collect();
+        assert_eq!(roots, [1]);
+        assert_eq!(reader.marked_threads, BTreeSet::from([1]));
+        assert!(reader.reading_threads.is_empty());
+    }
+
+    #[test]
+    fn article_view_return_keys_close_the_article() {
+        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+            assert_eq!(
+                operation_for_key(ReaderScreen::Article, key(code)),
+                ReaderOperation::Quit
+            );
+        }
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Backspace)),
+            ReaderOperation::CloseArticle
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Backspace)),
+            ReaderOperation::Ignore
+        );
+        // Only presses count; repeats and releases are ignored.
+        let mut release = key(KeyCode::Char('n'));
+        release.kind = KeyEventKind::Release;
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, release),
+            ReaderOperation::Ignore
+        );
     }
 
     #[test]

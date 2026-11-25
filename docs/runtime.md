@@ -62,7 +62,8 @@ Command-line entry points:
 * `--group <name>` without `--interactive` loads the group's overview chunks
   (see [nntp.md](./nntp.md)) into `SessionState`, builds the headless thread
   list, and prints thread summaries with unread counts. `--flat` prints the
-  article number and subject of each overview row instead.
+  article number and subject of each overview row instead. Control
+  characters in server text are printed as U+FFFD.
 * `--group <name> --thread-root <number>` opens the first unread article in a
   loaded thread, falling back to its first article when all are read. It
   reports an explicit error if the requested root is outside the loaded

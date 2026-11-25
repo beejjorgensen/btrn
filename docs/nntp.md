@@ -40,6 +40,7 @@ The protocol implementation should use CRLF line endings on the wire and should 
 * Apply a `10`-second connect timeout and a `30`-second socket read/write inactivity timeout by default.
 * These values should be configurable through `Config`; no timeout should be unlimited.
 * The read timeout is applied independently to each read or write operation rather than as one lifetime limit for an entire response.
+* A timeout or other socket read/write failure must close the connection, so a late reply is never read as the answer to a later command.
 * One NNTP command and its response should be serialized at a time.
 
 The server greeting is the first response after connecting:

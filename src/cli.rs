@@ -121,7 +121,7 @@ pub fn format_thread_summary(loaded: &LoadedGroupThreads) -> String {
         .sum::<usize>();
     let mut output = format!(
         "{}: {} threads, {} articles, {} unread\n",
-        loaded.threads.group_name,
+        printable(&loaded.threads.group_name),
         loaded.threads.rows.len(),
         article_count,
         unread_count
@@ -138,7 +138,7 @@ pub fn format_thread_summary(loaded: &LoadedGroupThreads) -> String {
             row.article_numbers.len(),
             row.root_article_number,
             unresolved,
-            row.subject
+            printable(&row.subject)
         ));
     }
     output
@@ -153,15 +153,66 @@ pub fn format_flat_overview(state: &SessionState, group: &str) -> String {
                 .as_deref()
                 .map(String::from_utf8_lossy)
                 .unwrap_or_default();
-            output.push_str(&format!("{number} {subject}\n"));
+            output.push_str(&format!("{number} {}\n", printable(&subject)));
         }
     }
     output
 }
 
+/// Server text with control characters replaced by U+FFFD, so it cannot
+/// drive the user's terminal.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::article::{ArticleMetadata, MessageId};
+    use crate::state::thread_list::ThreadList;
+    use crate::state::LoadedArticle;
+
+    #[test]
+    fn plain_text_output_replaces_control_characters_in_server_text() {
+        let mut state = SessionState::default();
+        state
+            .load_articles(
+                "comp.test",
+                [LoadedArticle {
+                    article_number: 7,
+                    metadata: ArticleMetadata {
+                        message_id: MessageId::parse(b"<a@example>"),
+                        references: Vec::new(),
+                        in_reply_to: None,
+                        from: None,
+                        subject: Some(b"red \x1b[31mtext\x07".to_vec()),
+                        date: None,
+                        issues: Vec::new(),
+                    },
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            format_flat_overview(&state, "comp.test"),
+            "7 red \u{fffd}[31mtext\u{fffd}\n"
+        );
+        let loaded = LoadedGroupThreads {
+            threads: ThreadList::from_session(&state, "comp.test").unwrap(),
+            invalid_rows: 0,
+            out_of_range_rows: 0,
+        };
+        let summary = format_thread_summary(&loaded);
+        assert!(!summary.contains('\u{1b}') && !summary.contains('\u{7}'));
+        assert!(summary.ends_with("1/1 7 red \u{fffd}[31mtext\u{fffd}\n"));
+    }
 
     fn parse(arguments: &[&str]) -> Result<Arguments, String> {
         Arguments::parse(arguments.iter().map(|argument| (*argument).to_owned()))

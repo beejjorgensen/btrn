@@ -268,14 +268,15 @@ impl NntpSession {
         {
             return Err(NntpError::protocol(ProtocolError::InvalidCommand));
         }
-        self.stream
-            .get_mut()
+        let stream = self.stream.get_mut();
+        if stream
             .write_all(format!("{command}\r\n").as_bytes())
-            .map_err(|_| NntpError::protocol(ProtocolError::Io))?;
-        self.stream
-            .get_mut()
-            .flush()
-            .map_err(|_| NntpError::protocol(ProtocolError::Io))?;
+            .and_then(|()| stream.flush())
+            .is_err()
+        {
+            stream.shutdown();
+            return Err(NntpError::protocol(ProtocolError::Io));
+        }
         self.read_response(multiline)
     }
 
@@ -368,10 +369,15 @@ impl NntpSession {
     fn read_line(&mut self, line: &mut Vec<u8>) -> Result<usize, NntpError> {
         loop {
             let (bytes, complete) = {
-                let buffer = self
-                    .stream
-                    .fill_buf()
-                    .map_err(|_| NntpError::protocol(ProtocolError::Io))?;
+                let buffer = match self.stream.fill_buf() {
+                    Ok(buffer) => buffer,
+                    Err(_) => {
+                        // After a timeout a late reply could otherwise be
+                        // read as the answer to the next command.
+                        self.stream.get_ref().shutdown();
+                        return Err(NntpError::protocol(ProtocolError::Io));
+                    }
+                };
                 if buffer.is_empty() {
                     return Err(NntpError::protocol(ProtocolError::Connection));
                 }
@@ -826,9 +832,6 @@ mod tests {
             session.authenticate("rejected", "secret"),
             Err(AuthenticationError::AuthenticationFailed(481))
         );
-        assert!(!AuthenticationError::AuthenticationFailed(481)
-            .to_string()
-            .contains("secret"));
         server.join().unwrap();
     }
 
@@ -855,6 +858,69 @@ mod tests {
             session.authenticate("challenged", "secret"),
             Err(AuthenticationError::ChallengeRequired)
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn authentication_errors_never_contain_the_credentials() {
+        const USER: &str = "reader-name-7f3a";
+        const PASS: &str = "pass-word-9c1e";
+        let (address, server) = fake_server(|mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            // The server echoes the credentials back in every reply.
+            let user = format!("AUTHINFO USER {USER}");
+            let pass = format!("AUTHINFO PASS {PASS}");
+            read_command(&mut reader, &user);
+            stream
+                .write_all(format!("381 {USER}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &pass);
+            stream
+                .write_all(format!("481 {PASS}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &user);
+            stream
+                .write_all(format!("381 {USER}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &pass);
+            stream
+                .write_all(format!("299 {PASS}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &user);
+            stream
+                .write_all(format!("399 {USER} {PASS}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &user);
+            stream
+                .write_all(format!("381 {USER}\r\n").as_bytes())
+                .unwrap();
+            read_command(&mut reader, &pass);
+            // Disconnect mid-exchange.
+        });
+        let mut session = connect(address).unwrap();
+        let errors = [
+            session.authenticate(USER, PASS).unwrap_err(),
+            session.authenticate(USER, PASS).unwrap_err(),
+            session.authenticate(USER, PASS).unwrap_err(),
+            session.authenticate(USER, PASS).unwrap_err(),
+            session.authenticate("bad user", PASS).unwrap_err(),
+        ];
+        assert_eq!(
+            errors,
+            [
+                AuthenticationError::AuthenticationFailed(481),
+                AuthenticationError::UnexpectedStatus(299),
+                AuthenticationError::UnexpectedStatus(399),
+                AuthenticationError::Transport(NntpError::protocol(ProtocolError::Connection)),
+                AuthenticationError::InvalidArguments,
+            ]
+        );
+        for error in &errors {
+            for text in [error.to_string(), format!("{error:?}")] {
+                assert!(!text.contains(USER) && !text.contains(PASS), "{text}");
+            }
+        }
         server.join().unwrap();
     }
 
@@ -1366,7 +1432,11 @@ mod tests {
         let mut session = connect(address).unwrap();
         let error = session.list_active().unwrap_err();
         assert_eq!(error.protocol, ProtocolError::OversizedLine);
-        assert!(session.execute("NOOP", false).is_err());
+        assert_eq!(
+            session.execute("NOOP", false).unwrap_err().protocol,
+            ProtocolError::Io,
+            "the connection must be closed"
+        );
         server.join().unwrap();
     }
 
@@ -1394,7 +1464,11 @@ mod tests {
         let mut session = connect(address).unwrap();
         let error = session.list_active().unwrap_err();
         assert_eq!(error.protocol, ProtocolError::OversizedResponse);
-        assert!(session.execute("NOOP", false).is_err());
+        assert_eq!(
+            session.execute("NOOP", false).unwrap_err().protocol,
+            ProtocolError::Io,
+            "the connection must be closed"
+        );
         server.join().unwrap();
     }
 
@@ -1440,6 +1514,10 @@ mod tests {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             read_command(&mut reader, "NOOP");
             thread::sleep(Duration::from_millis(150));
+            // A late reply must not be taken as the answer to a later command.
+            let _ = stream.write_all(b"200 late reply\r\n");
+            let mut rest = Vec::new();
+            let _ = reader.read_to_end(&mut rest);
         });
         let mut session = NntpSession::connect(
             "127.0.0.1",
@@ -1451,6 +1529,12 @@ mod tests {
         .unwrap();
         let error = session.execute("NOOP", false).unwrap_err();
         assert_eq!(error.protocol, ProtocolError::Io);
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(
+            session.execute("NOOP", false).unwrap_err().protocol,
+            ProtocolError::Io,
+            "the connection must be closed"
+        );
         server.join().unwrap();
     }
 
@@ -1472,17 +1556,25 @@ mod tests {
         server.join().unwrap();
     }
 
-    #[test]
-    fn connects_over_tls_and_exchanges_a_command() {
+    const TLS_TEST_CERTIFICATE: &[u8] =
+        include_bytes!("../../tests/fixtures/nntp/tls-test-cert.der");
+
+    /// A TLS server presenting the test certificate (valid for 127.0.0.1).
+    /// It runs `handler` on the established stream, or returns when the
+    /// client abandons the handshake.
+    fn tls_server(
+        handler: impl FnOnce(&mut BufReader<StreamOwned<rustls::ServerConnection, TcpStream>>)
+            + Send
+            + 'static,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
         use rustls::{ServerConfig, ServerConnection};
 
-        let certificate = include_bytes!("../../tests/fixtures/nntp/tls-test-cert.der").to_vec();
         let private_key = include_bytes!("../../tests/fixtures/nntp/tls-test-key.der").to_vec();
         let server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![CertificateDer::from(certificate.clone())],
+                vec![CertificateDer::from(TLS_TEST_CERTIFICATE.to_vec())],
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(private_key)),
             )
             .unwrap();
@@ -1491,31 +1583,77 @@ mod tests {
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let connection = ServerConnection::new(Arc::new(server_config)).unwrap();
-            let mut reader = BufReader::new(StreamOwned::new(connection, stream));
-            reader
-                .get_mut()
-                .write_all(b"200 secure server ready\r\n")
-                .unwrap();
-            read_command(&mut reader, "NOOP");
-            reader
-                .get_mut()
-                .write_all(b"250 command completed\r\n")
-                .unwrap();
+            let mut tls = StreamOwned::new(connection, stream);
+            if tls.conn.complete_io(&mut tls.sock).is_err() {
+                return;
+            }
+            handler(&mut BufReader::new(tls));
         });
+        (address, server)
+    }
 
-        let mut roots = RootCertStore::empty();
-        roots.add(CertificateDer::from(certificate)).unwrap();
-        let mut session = NntpSession::connect_with_roots(
-            "127.0.0.1",
+    fn connect_tls(
+        host: &str,
+        address: SocketAddr,
+        roots: RootCertStore,
+    ) -> Result<NntpSession, NntpError> {
+        NntpSession::connect_with_roots(
+            host,
             address.port(),
             true,
             Duration::from_secs(2),
             Duration::from_secs(2),
             roots,
         )
-        .unwrap();
+    }
+
+    fn test_roots() -> RootCertStore {
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(
+                TLS_TEST_CERTIFICATE.to_vec(),
+            ))
+            .unwrap();
+        roots
+    }
+
+    #[test]
+    fn connects_over_tls_and_exchanges_a_command() {
+        let (address, server) = tls_server(|reader| {
+            reader
+                .get_mut()
+                .write_all(b"200 secure server ready\r\n")
+                .unwrap();
+            read_command(reader, "NOOP");
+            reader
+                .get_mut()
+                .write_all(b"250 command completed\r\n")
+                .unwrap();
+        });
+        let mut session = connect_tls("127.0.0.1", address, test_roots()).unwrap();
         let response = session.execute("NOOP", false).unwrap();
         assert_eq!(response.status, 250);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_an_untrusted_tls_certificate() {
+        let (address, server) = tls_server(|_| panic!("handshake must not complete"));
+        let error = connect_tls("127.0.0.1", address, RootCertStore::empty())
+            .err()
+            .unwrap();
+        assert_eq!(error.protocol, ProtocolError::Tls);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rejects_a_tls_certificate_for_another_host() {
+        // The certificate names only 127.0.0.1, so "localhost" must not match.
+        let (address, server) = tls_server(|_| panic!("handshake must not complete"));
+        let error = connect_tls("localhost", address, test_roots())
+            .err()
+            .unwrap();
+        assert_eq!(error.protocol, ProtocolError::Tls);
         server.join().unwrap();
     }
 

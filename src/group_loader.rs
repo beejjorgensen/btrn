@@ -108,6 +108,8 @@ pub fn load_group_threads_with_progress(
 mod tests {
     use super::*;
     use crate::cli::{format_flat_overview, format_thread_summary};
+    use crate::nntp::overview::OverviewError;
+    use crate::nntp::GroupSelection;
     use crate::persistence::newsrc::{ArticleRange, NewsrcEntry};
     use crate::state::article_navigation::first_unread_article_for_thread_root;
     use crate::state::SessionState;
@@ -450,6 +452,128 @@ mod tests {
         assert_eq!(loaded.threads.rows[0].article_numbers, [1, 2, 3, 4, 5, 6]);
         assert_eq!(loaded.threads.rows[0].unread_count, 3);
         assert_eq!(state.newsrc.entry("comp.test").unwrap().read_ranges, read);
+    }
+
+    /// Serves the greeting, capabilities, GROUP for comp.test 1-4, and the
+    /// overview format, then hands the stream to `rest`.
+    fn four_article_group_server(
+        rest: impl FnOnce(&mut TcpStream, &mut BufReader<TcpStream>) + Send + 'static,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
+        fake_server(move |mut stream| {
+            stream.write_all(b"200 server ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            read_command(&mut reader, "CAPABILITIES");
+            stream
+                .write_all(b"101 capabilities\r\nREADER\r\nOVER\r\n.\r\n")
+                .unwrap();
+            read_command(&mut reader, "GROUP comp.test");
+            stream.write_all(b"211 4 1 4 comp.test\r\n").unwrap();
+            rest(&mut stream, &mut reader);
+        })
+    }
+
+    fn serve_overview_format(stream: &mut TcpStream, reader: &mut BufReader<TcpStream>) {
+        read_command(reader, "LIST OVERVIEW.FMT");
+        stream
+            .write_all(
+                b"215 overview format\r\n\
+                  Subject:\r\nFrom:\r\nDate:\r\nMessage-ID:\r\nReferences:\r\n:bytes\r\n:lines\r\n.\r\n",
+            )
+            .unwrap();
+    }
+
+    fn connect_to_four_article_group(address: SocketAddr) -> (NntpSession, GroupSelection) {
+        let mut nntp = NntpSession::connect(
+            "127.0.0.1",
+            address.port(),
+            false,
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        nntp.discover_capabilities().unwrap();
+        let selection = nntp.select_group("comp.test").unwrap();
+        (nntp, selection)
+    }
+
+    const TWO_PER_CHUNK: OverviewLimits = OverviewLimits {
+        unread: 10,
+        read_context: 0,
+        chunk_size: 2,
+    };
+
+    #[test]
+    fn a_failed_later_chunk_leaves_session_state_unchanged() {
+        let (address, server) = four_article_group_server(|stream, reader| {
+            serve_overview_format(stream, reader);
+            read_command(reader, "OVER 1-2");
+            stream
+                .write_all(
+                    b"224 overview follows\r\n\
+                      2\tsubject\tA <a@b>\tWed, 02 Jan 2019 10:00:00 +0000\t<four@b>\t\t12\t2\r\n\
+                      .\r\n",
+                )
+                .unwrap();
+            read_command(reader, "OVER 3-4");
+            stream.write_all(b"503 overview unavailable\r\n").unwrap();
+        });
+        let (mut nntp, selection) = connect_to_four_article_group(address);
+        let mut state = SessionState::default();
+
+        let error = load_group_threads(&mut nntp, &mut state, &selection, TWO_PER_CHUNK)
+            .err()
+            .unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(
+                error,
+                GroupOverviewError::Overview(OverviewError::UnexpectedStatus(503))
+            ),
+            "{error:?}"
+        );
+        assert!(state.groups.is_empty());
+        assert!(state.newsrc.entries.is_empty());
+    }
+
+    #[test]
+    fn a_progress_failure_stops_the_load() {
+        let (address, server) = four_article_group_server(|stream, reader| {
+            serve_overview_format(stream, reader);
+            read_command(reader, "OVER 1-2");
+            stream.write_all(b"224 overview follows\r\n.\r\n").unwrap();
+        });
+        let (mut nntp, selection) = connect_to_four_article_group(address);
+        let mut state = SessionState::default();
+        let mut reports = Vec::new();
+
+        let error = load_group_threads_with_progress(
+            &mut nntp,
+            &mut state,
+            &selection,
+            TWO_PER_CHUNK,
+            |completed, total| {
+                reports.push((completed, total));
+                if completed == 1 {
+                    Err(io::Error::other("terminal gone"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .err()
+        .unwrap();
+        server.join().unwrap();
+        assert!(
+            matches!(error, GroupOverviewError::Progress(_)),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "could not render loading progress: terminal gone"
+        );
+        // The second chunk was never requested.
+        assert_eq!(reports, [(0, 2), (1, 2)]);
+        assert!(state.groups.is_empty());
     }
 
     #[test]

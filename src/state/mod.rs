@@ -195,6 +195,35 @@ mod tests {
     }
 
     #[test]
+    fn saved_newsrc_holds_only_ranges_even_with_loaded_articles() {
+        let mut state = SessionState::default();
+        let mut article = metadata("secret-id@example", &["parent-id@example"]);
+        article.subject = Some(b"Secret subject".to_vec());
+        article.from = Some(b"Secret Author <a@example>".to_vec());
+        state
+            .load_articles(
+                "comp.test",
+                [LoadedArticle {
+                    article_number: 5,
+                    metadata: article,
+                }],
+            )
+            .unwrap();
+        state.mark_article_read("comp.test", 5).unwrap();
+
+        let directory = std::env::temp_dir().join(format!(
+            "btrn-state-newsrc-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = directory.join("newsrc");
+        state.newsrc.write_atomic(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(contents, "comp.test! 5\n");
+    }
+
+    #[test]
     fn loading_articles_builds_threads_without_marking_any_read() {
         let mut state = SessionState::default();
         state

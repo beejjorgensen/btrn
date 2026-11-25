@@ -68,21 +68,14 @@ pub(crate) fn fit_terminal_line(line: &str, width: u16) -> String {
         })
         .collect::<String>();
     let width = usize::from(width);
-    if sanitized.len() <= width {
+    if sanitized.chars().count() <= width {
         return sanitized;
     }
-
-    let mut fitted = String::new();
-    let prefix_limit = width.saturating_sub('…'.len_utf8());
-    for character in sanitized.chars() {
-        if fitted.len() + character.len_utf8() > prefix_limit {
-            break;
-        }
-        fitted.push(character);
+    if width == 0 {
+        return String::new();
     }
-    if width > 0 {
-        fitted.push('…');
-    }
+    let mut fitted: String = sanitized.chars().take(width - 1).collect();
+    fitted.push('…');
     fitted
 }
 
@@ -120,9 +113,14 @@ mod tests {
 
     #[test]
     fn terminal_line_is_sanitized_and_fitted_to_columns() {
-        assert_eq!(fit_terminal_line("ab\u{1b}cdef", 5), "ab…");
+        assert_eq!(fit_terminal_line("ab\u{1b}cdef", 5), "ab\u{fffd}c…");
         assert_eq!(fit_terminal_line("a\u{1b}b", 10), "a�b");
         assert_eq!(fit_terminal_line("abcdef", 1), "…");
+        assert_eq!(fit_terminal_line("abcdef", 0), "");
         assert_eq!(fit_terminal_line("okay", 10), "okay");
+        assert_eq!(fit_terminal_line("okay", 4), "okay");
+        // Width counts characters, not UTF-8 bytes.
+        assert_eq!(fit_terminal_line("café", 4), "café");
+        assert_eq!(fit_terminal_line("caféterias", 5), "café…");
     }
 }

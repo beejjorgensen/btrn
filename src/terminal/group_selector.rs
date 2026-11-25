@@ -431,6 +431,21 @@ mod tests {
             operation_for_key(key(KeyCode::Enter)),
             GroupSelectorOperation::StartMarkedGroups
         );
+        assert_eq!(
+            operation_for_key(key(KeyCode::Char('>'))),
+            GroupSelectorOperation::NextPage
+        );
+        assert_eq!(
+            operation_for_key(key(KeyCode::Esc)),
+            GroupSelectorOperation::Quit
+        );
+        assert_eq!(
+            operation_for_key(key(KeyCode::Char('B'))),
+            GroupSelectorOperation::ToggleGroup('b')
+        );
+        let mut release = key(KeyCode::Char('a'));
+        release.kind = crossterm::event::KeyEventKind::Release;
+        assert_eq!(operation_for_key(release), GroupSelectorOperation::Ignore);
     }
 
     #[test]

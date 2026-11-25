@@ -3,6 +3,7 @@
 //! flow function only renders, reads keys, and calls the editor and NNTP.
 
 use crate::decoder::DecodedArticle;
+use crate::model::article::MessageId;
 use crate::nntp::active::PostingStatus;
 use crate::nntp::{NntpSession, ServerCapabilities};
 use crate::posting::compose_file::{run_editor, CompositionFile, EditorError};
@@ -396,20 +397,11 @@ pub(crate) fn run_followup(
                     let composition = composition
                         .as_ref()
                         .expect("Send is only offered for a checked composition");
-                    let from = composition
-                        .from()
-                        .expect("checked composition has a valid From");
-                    let message_id = message_id
-                        .get_or_insert_with(|| generate_message_id(&from))
-                        .clone();
-                    let date = format_date(SystemTime::now());
-                    let article = build_article(
+                    let article = outgoing_article(
                         composition,
-                        &OutgoingContext {
-                            references: &draft.references,
-                            message_id: &message_id,
-                            date: &date,
-                        },
+                        &draft.references,
+                        &mut message_id,
+                        &format_date(SystemTime::now()),
                     );
                     render_lines(&mut terminal.output, &["Posting...".to_owned()])?;
                     match session.post(&article) {
@@ -425,9 +417,56 @@ pub(crate) fn run_followup(
     }
 }
 
+/// The article to send. The Message-ID is generated on the first send and
+/// reused after edits and failed sends, so a resend cannot post a duplicate.
+fn outgoing_article(
+    composition: &Composition,
+    references: &[MessageId],
+    message_id: &mut Option<String>,
+    date: &str,
+) -> Vec<Vec<u8>> {
+    let from = composition
+        .from()
+        .expect("checked composition has a valid From");
+    let message_id = message_id.get_or_insert_with(|| generate_message_id(&from));
+    build_article(
+        composition,
+        &OutgoingContext {
+            references,
+            message_id,
+            date,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resends_and_sends_after_an_edit_reuse_the_first_message_id() {
+        let checked = |text: &str| {
+            let parsed = parse_composition(text.as_bytes());
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            parsed.composition
+        };
+        let message_id_line = |article: &[Vec<u8>]| {
+            article
+                .iter()
+                .map(|line| String::from_utf8(line.clone()).unwrap())
+                .find(|line| line.starts_with("Message-ID: "))
+                .unwrap()
+        };
+        let first = checked("Newsgroups: a.b\nSubject: s\nFrom: u@example.com\n\nbody\n");
+        let edited = checked("Newsgroups: a.b\nSubject: s2\nFrom: u@example.org\n\nedited\n");
+        let mut message_id = None;
+        let sent = message_id_line(&outgoing_article(&first, &[], &mut message_id, "d1"));
+        assert!(sent.ends_with("@example.com>"), "{sent}");
+        let resent = message_id_line(&outgoing_article(&first, &[], &mut message_id, "d2"));
+        let after_edit = message_id_line(&outgoing_article(&edited, &[], &mut message_id, "d3"));
+        assert_eq!(resent, sent);
+        assert_eq!(after_edit, sent);
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

@@ -336,6 +336,9 @@ The composition is checked for correctness and completeness:
   `Approved`, `Cancel-Key`) has a value.
 * A blank line separates the headers from the body.
 * No header or body line exceeds 998 bytes, excluding the line ending.
+* No ASCII header exceeds 998 bytes once its continuation lines are joined,
+  because it is posted on one line. Non-ASCII headers are refolded as
+  encoded words instead.
 * The body is valid UTF-8.
 
 If some of the headers are not correct or something is missing, print
@@ -350,6 +353,7 @@ ERROR: the "Date:" line appears more than once.
 ERROR: btrn does not send the "Control:" header.
 ERROR: line 3 contains a control character.
 ERROR: line 14 is longer than 998 bytes.
+ERROR: the "Keywords:" line is longer than 998 bytes once its continuation lines are joined.
 ERROR: the article body is not valid UTF-8.
 
 ```

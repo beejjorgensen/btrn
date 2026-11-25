@@ -407,11 +407,15 @@ mod tests {
     #[derive(Default)]
     struct TestWriter {
         bytes: Vec<u8>,
+        fail_write: bool,
         fail_flush: bool,
     }
 
     impl Write for TestWriter {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.fail_write {
+                return Err(io::Error::other("write failed"));
+            }
             self.bytes.extend_from_slice(buffer);
             Ok(buffer.len())
         }
@@ -497,26 +501,33 @@ mod tests {
 
     #[test]
     fn does_not_mark_read_when_render_or_flush_fails() {
-        let mut state = SessionState::default();
-        let mut output = TestWriter {
-            fail_flush: true,
-            ..TestWriter::default()
-        };
         let article = sample_article();
         let layout = ArticleLayout::new(&context("comp.test"), &article, 80);
-        assert!(matches!(
-            present_article(
-                &mut output,
-                &mut state,
-                &context("comp.test"),
-                &layout,
-                80,
-                24
-            ),
-            Err(PresentArticleError::Render(_))
-        ));
-        assert!(!state.is_read("comp.test", 9));
-        assert!(state.newsrc.entries.is_empty());
+        for mut output in [
+            TestWriter {
+                fail_write: true,
+                ..TestWriter::default()
+            },
+            TestWriter {
+                fail_flush: true,
+                ..TestWriter::default()
+            },
+        ] {
+            let mut state = SessionState::default();
+            assert!(matches!(
+                present_article(
+                    &mut output,
+                    &mut state,
+                    &context("comp.test"),
+                    &layout,
+                    80,
+                    24
+                ),
+                Err(PresentArticleError::Render(_))
+            ));
+            assert!(!state.is_read("comp.test", 9));
+            assert!(state.newsrc.entries.is_empty());
+        }
     }
 
     #[test]
@@ -755,7 +766,7 @@ mod tests {
         assert_eq!(
             layout.rows(),
             [
-                "comp.test #9 (3 m…",
+                "comp.test #9 (3 mor…",
                 "Path: a!b",
                 "From: x@example.inva",
                 "+   lid",
@@ -772,7 +783,7 @@ mod tests {
         let filtered = ArticleLayout::new(&context("comp.test"), &article, 20);
         assert_eq!(
             filtered.rows()[1..5],
-            ["From: x@example.i…", "Subject: topic", "Lines: 1", ""]
+            ["From: x@example.inv…", "Subject: topic", "Lines: 1", ""]
         );
     }
 

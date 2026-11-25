@@ -6,7 +6,8 @@ use std::time::Duration;
 
 pub struct Config {
     pub server: Option<String>,
-    pub port: u16,
+    /// The explicitly configured port; see [`Config::port`] for the one used.
+    pub port: Option<u16>,
     pub use_tls: bool,
     pub username: Option<String>,
     pub password: Option<String>,
@@ -235,11 +236,17 @@ impl Config {
         Ok(config)
     }
 
+    /// The port to connect to: the configured one, or 563 with TLS and 119
+    /// without.
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(if self.use_tls { 563 } else { 119 })
+    }
+
     pub fn with_paths(config_dir: PathBuf, editor: String) -> Self {
         let newsrc_path = config_dir.join("newsrc");
         Self {
             server: None,
-            port: 563,
+            port: None,
             use_tls: true,
             username: None,
             password: None,
@@ -265,7 +272,7 @@ impl Config {
             self.server = Some(server);
         }
         if let Some(port) = file.port {
-            self.port = port.get();
+            self.port = Some(port.get());
         }
         if let Some(use_tls) = file.use_tls {
             self.use_tls = use_tls;
@@ -372,7 +379,7 @@ mod tests {
     fn defaults_use_secure_bounded_nntp_and_overview_settings() {
         let config = Config::with_paths(PathBuf::from("/tmp/btrn-config"), "vim".into());
         assert!(config.use_tls);
-        assert_eq!(config.port, 563);
+        assert_eq!(config.port(), 563);
         assert_eq!(config.connect_timeout, Duration::from_secs(10));
         assert_eq!(config.read_timeout, Duration::from_secs(30));
         assert_eq!(config.initial_overview_limit, 10_000);
@@ -485,7 +492,12 @@ mod tests {
                 "{input}"
             );
         }
-        assert!(apply("server = \"a\"\nserver = \"b\"\n").is_err());
+        assert!(matches!(
+            apply("server = \"a\"\nserver = \"b\"\n"),
+            Err(ConfigError::InvalidLine {
+                line_number: Some(2)
+            })
+        ));
     }
 
     #[test]
@@ -502,9 +514,19 @@ mod tests {
     }
 
     #[test]
+    fn default_port_follows_use_tls_unless_a_port_is_configured() {
+        let plaintext = apply("use_tls = false").unwrap();
+        assert_eq!(plaintext.port(), 119);
+        let explicit = apply("use_tls = false\nport = 563").unwrap();
+        assert_eq!(explicit.port(), 563);
+        let tls = apply("port = 8563").unwrap();
+        assert_eq!(tls.port(), 8563);
+    }
+
+    #[test]
     fn unset_keys_keep_defaults() {
         let config = apply("server = \"news.example.net\"").unwrap();
-        assert_eq!(config.port, 563);
+        assert_eq!(config.port(), 563);
         assert!(config.use_tls);
         assert_eq!(config.editor, ["vim"]);
         assert_eq!(config.display_name, None);
@@ -540,6 +562,49 @@ mod tests {
             ConfigError::PasswordCommandFailed.to_string(),
             "password command failed"
         );
+    }
+
+    #[test]
+    fn password_command_failures_are_typed_and_never_carry_its_output() {
+        let resolve = |command: &[&str]| {
+            let mut config = Config::with_paths(PathBuf::from("/tmp/btrn-config"), "vim".into());
+            config.username = Some("reader".into());
+            config.password_command = Some(command.iter().map(|word| (*word).into()).collect());
+            config.resolve_credentials()
+        };
+        let marker = "leaked-7d2b";
+        let failed = resolve(&[
+            "sh",
+            "-c",
+            &format!("echo {marker}; echo {marker} >&2; exit 3"),
+        ])
+        .err()
+        .unwrap();
+        assert!(matches!(failed, ConfigError::PasswordCommandFailed));
+        for text in [failed.to_string(), format!("{failed:?}")] {
+            assert!(!text.contains(marker), "{text}");
+        }
+        assert!(matches!(
+            resolve(&["/nonexistent/btrn-password-command"]).err(),
+            Some(ConfigError::PasswordCommandStart)
+        ));
+        assert!(matches!(
+            resolve(&[""]).err(),
+            Some(ConfigError::PasswordCommandStart)
+        ));
+        assert!(matches!(
+            resolve(&["printf", "\\377"]).err(),
+            Some(ConfigError::PasswordNotUtf8)
+        ));
+        assert!(matches!(
+            resolve(&["printf", ""]).err(),
+            Some(ConfigError::EmptyPassword)
+        ));
+        // One trailing CRLF or LF is stripped; anything before it is kept.
+        let password = |command: &[&str]| resolve(command).unwrap().unwrap().password;
+        assert_eq!(password(&["printf", "secret\\r\\n"]), "secret");
+        assert_eq!(password(&["printf", "secret\\n\\n"]), "secret\n");
+        assert_eq!(password(&["printf", "sec ret"]), "sec ret");
     }
 
     #[test]

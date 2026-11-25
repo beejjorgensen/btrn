@@ -49,6 +49,9 @@ pub enum CompositionError {
     ControlCharacter(usize),
     MissingSeparator,
     LineTooLong(usize),
+    /// An ASCII header whose continuation lines join to more than
+    /// [`MAX_LINE_BYTES`]; it is posted on one line.
+    HeaderTooLong(String),
     NotUtf8,
 }
 
@@ -95,6 +98,10 @@ impl std::fmt::Display for CompositionError {
             Self::LineTooLong(line) => write!(
                 formatter,
                 "ERROR: line {line} is longer than {MAX_LINE_BYTES} bytes."
+            ),
+            Self::HeaderTooLong(name) => write!(
+                formatter,
+                "ERROR: the \"{name}:\" line is longer than {MAX_LINE_BYTES} bytes once its continuation lines are joined."
             ),
             Self::NotUtf8 => write!(formatter, "ERROR: the article body is not valid UTF-8."),
         }
@@ -162,6 +169,13 @@ pub fn parse_composition(bytes: &[u8]) -> ParsedComposition {
                 raw_headers.push((name.to_owned(), value.trim().to_owned()));
             }
             _ => errors.push(CompositionError::InvalidHeaderLine(index + 1)),
+        }
+    }
+    // ASCII values are posted unfolded on one line; non-ASCII values are
+    // re-folded as encoded words.
+    for (name, value) in &raw_headers {
+        if value.is_ascii() && name.len() + 2 + value.len() > MAX_LINE_BYTES {
+            errors.push(CompositionError::HeaderTooLong(name.clone()));
         }
     }
     let headers = raw_headers
@@ -399,6 +413,21 @@ mod tests {
             "x".repeat(MAX_LINE_BYTES)
         );
         assert!(errors(&exact).is_empty());
+
+        // Short continuation lines can still join into an over-long line.
+        let folded = format!(
+            "Newsgroups: a.b\nSubject: s\nFrom: u@example.com\nKeywords: k\n{}\n",
+            format!(" {}\n", "w".repeat(90)).repeat(11)
+        );
+        assert_eq!(
+            errors(&folded),
+            ["ERROR: the \"Keywords:\" line is longer than 998 bytes once its continuation lines are joined."]
+        );
+        let fits = format!(
+            "Newsgroups: a.b\nSubject: s\nFrom: u@example.com\nKeywords: k\n{}\n",
+            format!(" {}\n", "w".repeat(90)).repeat(10)
+        );
+        assert!(errors(&fits).is_empty());
 
         let mut bytes = b"Newsgroups: a.b\nSubject: s\nFrom: u@example.com\n\nbad ".to_vec();
         bytes.push(0xff);

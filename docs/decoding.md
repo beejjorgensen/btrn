@@ -28,3 +28,7 @@ encoded display headers, quoted-printable and base64 transfer encodings, and
 recognized character sets. It returns typed diagnostics for malformed or
 unsupported content rather than silently treating it as successfully decoded.
 The raw article remains unchanged; callers choose how to report decoder issues.
+A `=?` that does not begin a well-formed encoded word, or an encoded word
+that cannot be decoded, is kept as literal text with a `MalformedEncodedWord`
+diagnostic, and decoding continues with any later encoded words in the
+header.

@@ -267,11 +267,14 @@ fn decode_encoded_words(header_name: &[u8], value: &[u8], issues: &mut Vec<Decod
         }
         output.push_str(&decode_utf8(literal));
         let Some((end, charset, encoding, encoded)) = token else {
+            // Keep the `=?` as text and look for later encoded words.
             issues.push(DecodeIssue::MalformedEncodedWord {
                 header: header.clone(),
             });
-            output.push_str(&decode_utf8(&value[start..]));
-            return output;
+            output.push_str("=?");
+            cursor = start + 2;
+            previous_was_encoded = false;
+            continue;
         };
         let bytes = match encoding {
             b'B' | b'b' => {
@@ -703,6 +706,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unparseable_encoded_word_start_does_not_stop_later_decoding() {
+        let mut issues = Vec::new();
+        let value = decode_encoded_words(b"Subject", b"a =? b =?UTF-8?Q?x?=", &mut issues);
+        assert_eq!(value, "a =? b x");
+        assert_eq!(
+            issues,
+            vec![DecodeIssue::MalformedEncodedWord {
+                header: "Subject".to_owned()
+            }]
+        );
+    }
+
+    #[test]
     fn reports_malformed_and_unsupported_transfer_encodings() {
         let malformed = decode_article(&article(
             &[
@@ -751,6 +767,61 @@ mod tests {
         ));
         assert_eq!(decoded.body, "plain text");
         assert!(decoded.issues.is_empty());
+    }
+
+    /// A body of `levels` multiparts nested one inside the next, around a
+    /// plain text part.
+    fn nested_multipart(levels: usize) -> (String, String) {
+        let mut body = "Content-Type: text/plain\r\n\r\ninnermost".to_owned();
+        for level in (0..levels).rev() {
+            body = format!("--b{level}\r\n{body}\r\n--b{level}--");
+            if level > 0 {
+                body =
+                    format!("Content-Type: multipart/mixed; boundary=\"b{level}\"\r\n\r\n{body}");
+            }
+        }
+        (format!("multipart/mixed; boundary=\"b0\""), body)
+    }
+
+    #[test]
+    fn finds_plain_text_inside_nested_multiparts_up_to_the_depth_limit() {
+        let mixed = decode_article(&article(
+            &[(b"Content-Type", b"multipart/mixed; boundary=\"outer\"")],
+            b"--outer\r\nContent-Type: multipart/alternative; boundary=\"inner\"\r\n\r\n\
+              --inner\r\nContent-Type: text/html\r\n\r\n<p>html</p>\r\n\
+              --inner\r\nContent-Type: text/plain\r\n\r\nnested plain\r\n--inner--\r\n\
+              --outer\r\nContent-Type: application/octet-stream\r\n\r\nxyz\r\n--outer--",
+        ));
+        assert_eq!(mixed.body, "nested plain");
+        assert!(mixed.issues.is_empty(), "{:?}", mixed.issues);
+
+        let (content_type, body) = nested_multipart(16);
+        let deepest = decode_article(&article(
+            &[(b"Content-Type", content_type.as_bytes())],
+            body.as_bytes(),
+        ));
+        assert_eq!(deepest.body, "innermost");
+        assert!(deepest.issues.is_empty(), "{:?}", deepest.issues);
+
+        let (content_type, body) = nested_multipart(17);
+        let too_deep = decode_article(&article(
+            &[(b"Content-Type", content_type.as_bytes())],
+            body.as_bytes(),
+        ));
+        assert_eq!(too_deep.body, "");
+        assert!(too_deep
+            .issues
+            .contains(&DecodeIssue::MultipartDepthExceeded));
+    }
+
+    #[test]
+    fn multipart_without_a_plain_text_part_reports_it() {
+        let decoded = decode_article(&article(
+            &[(b"Content-Type", b"multipart/alternative; boundary=\"b\"")],
+            b"--b\r\nContent-Type: text/html\r\n\r\n<p>only html</p>\r\n--b--",
+        ));
+        assert_eq!(decoded.body, "");
+        assert_eq!(decoded.issues, [DecodeIssue::NoPlainTextPart]);
     }
 
     #[test]

@@ -35,12 +35,9 @@ fn main() {
     }
     if arguments.plaintext {
         config.use_tls = false;
-        if arguments.port.is_none() && config.port == 563 {
-            config.port = 119;
-        }
     }
     if let Some(port) = arguments.port {
-        config.port = port;
+        config.port = Some(port);
     }
     let posting_settings = PostingSettings {
         identity: posting::PostingIdentity {
@@ -56,7 +53,7 @@ fn main() {
 
     let mut session = NntpSession::connect(
         host,
-        config.port,
+        config.port(),
         config.use_tls,
         config.connect_timeout,
         config.read_timeout,
@@ -152,10 +149,7 @@ fn run_group(
         let reader = terminal::reader::ReaderState::new(loaded.threads, group.last_article);
         let reader_result =
             terminal::reader::run_interactive(session, &mut state, reader, posting_settings);
-        save_newsrc(&state, config).unwrap_or_else(|message| fail(message));
-        if let Err(error) = reader_result {
-            fail(format_args!("interactive reader failed: {error}"));
-        }
+        save_after_reader(&state, config, reader_result).unwrap_or_else(|message| fail(message));
         return;
     }
     let article_to_present = if let Some(root_article_number) = arguments.thread_root {
@@ -307,22 +301,17 @@ fn run_group_selector(
             };
             report_ignored_rows(&loaded);
             let reader = terminal::reader::ReaderState::new(loaded.threads, group.last_article);
-            let reader_exit = match terminal::reader::run_interactive_in_session(
+            let reader_result = terminal::reader::run_interactive_in_session(
                 session,
                 &mut state,
                 reader,
                 &mut terminal_session,
                 posting_settings,
-            ) {
+            );
+            let reader_exit = match save_after_reader(&state, config, reader_result) {
                 Ok(reader_exit) => reader_exit,
-                Err(error) => fail_in_terminal(
-                    terminal_session,
-                    format_args!("interactive reader failed: {error}"),
-                ),
+                Err(message) => fail_in_terminal(terminal_session, message),
             };
-            if let Err(message) = save_newsrc(&state, config) {
-                fail_in_terminal(terminal_session, message);
-            }
             if reader_exit == terminal::reader::ReaderExit::QuitApplication {
                 return;
             }
@@ -355,6 +344,25 @@ fn save_newsrc(state: &SessionState, config: &config::Config) -> Result<(), Stri
         .newsrc
         .write_atomic(&config.newsrc_path)
         .map_err(|error| format!("could not write {}: {error}", config.newsrc_path.display()))
+}
+
+/// Saves newsrc after an interactive reader returns, whether or not it
+/// failed, so articles already read are not lost. Returns the reader's
+/// result, or the failure message(s) to report.
+fn save_after_reader<T>(
+    state: &SessionState,
+    config: &config::Config,
+    reader_result: Result<T, terminal::reader::ReaderError>,
+) -> Result<T, String> {
+    let saved = save_newsrc(state, config);
+    match (reader_result, saved) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(save_error)) => Err(save_error),
+        (Err(error), Ok(())) => Err(format!("interactive reader failed: {error}")),
+        (Err(error), Err(save_error)) => {
+            Err(format!("interactive reader failed: {error}\n{save_error}"))
+        }
+    }
 }
 
 fn load_threads(

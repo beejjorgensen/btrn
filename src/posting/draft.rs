@@ -12,7 +12,7 @@ const ATTRIBUTION_LIMIT: usize = 72;
 pub struct FollowupDraft {
     pub text: String,
     /// The `References` for the followup: the original's references
-    /// followed by its message ID.
+    /// followed by its message ID, or empty when it has no valid message ID.
     pub references: Vec<MessageId>,
     /// The original article asked for replies by email.
     pub followup_to_poster: bool,
@@ -43,12 +43,18 @@ pub fn compose_followup(article: &DecodedArticle, identity: &PostingIdentity) ->
     };
 
     let message_id = header("Message-ID").and_then(|value| MessageId::parse(value.as_bytes()));
-    let mut references = header("References")
-        .map(|value| parse_message_ids(value.as_bytes()))
-        .unwrap_or_default();
-    if let Some(message_id) = &message_id {
-        references.push(message_id.clone());
-    }
+    // Without the original's own Message-ID the chain cannot be continued,
+    // so References is omitted entirely.
+    let references = match &message_id {
+        Some(message_id) => {
+            let mut references = header("References")
+                .map(|value| parse_message_ids(value.as_bytes()))
+                .unwrap_or_default();
+            references.push(message_id.clone());
+            references
+        }
+        None => Vec::new(),
+    };
 
     let mut lines = vec![
         header_line("Newsgroups", newsgroups),
@@ -273,6 +279,21 @@ mod tests {
             .find(|line| line.starts_with(&format!("{name}:")))
             .unwrap()
             .to_owned()
+    }
+
+    #[test]
+    fn references_are_omitted_when_the_original_has_no_valid_message_id() {
+        let references = |headers: &[(&str, &str)]| {
+            compose_followup(&article(headers, "q"), &full_identity()).references
+        };
+        let parent = ("References", "<root@example> <parent@example>");
+        assert!(references(&[parent]).is_empty());
+        assert!(references(&[parent, ("Message-ID", "not-an-id")]).is_empty());
+        assert_eq!(
+            references(&[parent, ("Message-ID", "<self@example>")]),
+            ["<root@example>", "<parent@example>", "<self@example>"]
+                .map(|id| MessageId::parse(id.as_bytes()).unwrap())
+        );
     }
 
     #[test]

@@ -634,4 +634,26 @@ mod tests {
         assert!(pages[0].entries.is_empty());
         assert_eq!(assigned_thread_letter(&pages[0], &threads, 0), None);
     }
+
+    #[test]
+    fn letters_skip_a_fully_read_thread_left_in_the_list() {
+        // Without the reader's filter, a fully read row can reach a page; it
+        // must get no letter and must not use one up.
+        let mut data = session_with_threads(3);
+        data.mark_article_read("comp.test", 2).unwrap();
+        let threads = ThreadList::from_session(&data, "comp.test").unwrap();
+        let pages = thread_pages(&threads, &data, 20);
+        let letters: Vec<(u64, Option<char>)> = threads
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                (
+                    row.root_article_number,
+                    assigned_thread_letter(&pages[0], &threads, index),
+                )
+            })
+            .collect();
+        assert_eq!(letters, [(3, Some('a')), (2, None), (1, Some('b'))]);
+    }
 }
