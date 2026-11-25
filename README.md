@@ -1,6 +1,62 @@
-# Experiments with Copilot
+# btrn - Another trn
 
-Designed by Beej, written by LLMs.
+Directed by Beej Jorgensen <beej@beej.us>; written by Claude and
+Copilot.
+
+This is an experiment to gain experience with agentic coding. *Use at
+your own risk.* See `LICENSE.md` for details.
+
+I chose this project because I like trn but it didn't support UTF-8 or
+various content transfer encodings. And the existing ancient crufty code
+was just too terrible to contemplate. And it seemed like a good size to
+tackle without going crazy. (Old C version is about 50K loc.)
+
+This is a "from-scratch" implementation made without use of the original
+source. The UI is a clone.
+
+***This program is feature-incomplete!***
+
+***Everything is subject to change!***
+
+***Not all paths have been human-tested!***
+
+## Quick Start
+
+```
+mkdir -p ~/.config/btrn
+echo 'alt.test:' > ~/.config/btrn/newsrc
+```
+
+Also add a `~/.config/btrn/config.toml` file. Here are a couple
+examples. Replace Eternal September with your server.
+
+Using `pass` for the password lookup:
+
+```
+server = "news.eternal-september.org"
+username = "loginname"
+password_command = "pass show news.eternal-september.org/loginname"
+display_name = "AI Bro"
+display_email = "aibro@example.com"
+```
+
+If you don't use `pass`, you can hardcode a password in the config with
+`password` instead of `password_command` if you like to live
+dangerously:
+
+```
+server = "news.eternal-september.org"
+username = "loginname"
+password = "4"
+display_name = "AI Bro"
+display_email = "aibro@example.com"
+```
+
+Then launch with:
+
+```
+cargo run -- news.eternal-september.org --interactive
+```
 
 ## NNTP probe
 
