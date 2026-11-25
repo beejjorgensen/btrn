@@ -14,7 +14,12 @@ enum GroupSelectorOperation {
     ToggleGroup(char),
     NextPage,
     PreviousPage,
+    /// Space: page forward, or on the last page start the marked groups
+    /// (all groups when none are marked).
     StartSelectedGroups,
+    /// Return: start the marked groups from any page; nothing when none are
+    /// marked.
+    StartMarkedGroups,
     Ignore,
 }
 
@@ -30,6 +35,7 @@ fn operation_for_key(key: KeyEvent) -> GroupSelectorOperation {
         KeyCode::Char('>') => GroupSelectorOperation::NextPage,
         KeyCode::Char('<') => GroupSelectorOperation::PreviousPage,
         KeyCode::Char(' ') => GroupSelectorOperation::StartSelectedGroups,
+        KeyCode::Enter => GroupSelectorOperation::StartMarkedGroups,
         KeyCode::Char(letter) if letter.is_ascii_alphanumeric() && letter != 'q' => {
             GroupSelectorOperation::ToggleGroup(letter.to_ascii_lowercase())
         }
@@ -101,8 +107,13 @@ impl GroupSelectorScreen {
         }
     }
 
+    /// The marked groups in display order, or `None` when none are marked.
+    fn start_marked(&self) -> Option<Vec<String>> {
+        (!self.groups.marked_groups().is_empty()).then(|| self.groups_to_read())
+    }
+
     fn start_or_advance(&mut self, page_count: usize) -> SpaceAction {
-        if !self.groups.marked_groups().is_empty() || self.page_index + 1 >= page_count {
+        if self.page_index + 1 >= page_count {
             SpaceAction::StartGroups(self.groups_to_read())
         } else {
             self.next_page(page_count);
@@ -223,6 +234,11 @@ pub(crate) fn run_interactive_in_session(
                     match action {
                         SpaceAction::AdvancePage => redraw = true,
                         SpaceAction::StartGroups(groups) => return Ok(Some(groups)),
+                    }
+                }
+                GroupSelectorOperation::StartMarkedGroups => {
+                    if let Some(groups) = screen.start_marked() {
+                        return Ok(Some(groups));
                     }
                 }
                 GroupSelectorOperation::Ignore => {}
@@ -407,6 +423,14 @@ mod tests {
             operation_for_key(key(KeyCode::Right)),
             GroupSelectorOperation::Ignore
         );
+        assert_eq!(
+            operation_for_key(key(KeyCode::Char(' '))),
+            GroupSelectorOperation::StartSelectedGroups
+        );
+        assert_eq!(
+            operation_for_key(key(KeyCode::Enter)),
+            GroupSelectorOperation::StartMarkedGroups
+        );
     }
 
     #[test]
@@ -465,17 +489,40 @@ mod tests {
     }
 
     #[test]
-    fn space_starts_marked_groups_immediately_from_any_page() {
+    fn space_pages_past_marks_and_starts_marked_groups_on_the_last_page() {
         let mut screen = screen(6);
         let page_count = group_pages(&screen.groups, 6).len();
+        assert!(page_count > 1);
         assert_eq!(
             screen.toggle_visible_group('a', &group_pages(&screen.groups, 6)[0]),
             Some((0, true))
         );
 
+        for expected_page in 1..page_count {
+            assert_eq!(
+                screen.start_or_advance(page_count),
+                SpaceAction::AdvancePage
+            );
+            assert_eq!(screen.page_index, expected_page);
+        }
         assert_eq!(
             screen.start_or_advance(page_count),
             SpaceAction::StartGroups(vec!["group.00".to_owned()])
+        );
+    }
+
+    #[test]
+    fn return_starts_marked_groups_from_any_page_and_ignores_no_marks() {
+        let mut screen = screen(6);
+        assert_eq!(screen.start_marked(), None);
+        assert_eq!(screen.page_index, 0);
+
+        let pages = group_pages(&screen.groups, 6);
+        assert_eq!(screen.toggle_visible_group('b', &pages[0]), Some((1, true)));
+        assert_eq!(screen.toggle_visible_group('a', &pages[0]), Some((0, true)));
+        assert_eq!(
+            screen.start_marked(),
+            Some(vec!["group.00".to_owned(), "group.01".to_owned()])
         );
         assert_eq!(screen.page_index, 0);
     }

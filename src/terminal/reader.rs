@@ -27,7 +27,12 @@ pub enum ReaderOperation {
     ToggleThread(char),
     NextPage,
     PreviousPage,
+    /// Space: page forward, or on the last page start the marked threads
+    /// (all threads when none are marked).
     StartSelectedThreads,
+    /// Return: start the marked threads from any page; nothing when none are
+    /// marked.
+    StartMarkedThreads,
     CloseArticle,
     NextArticle,
     NextUnreadArticle,
@@ -57,6 +62,7 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
         (ReaderScreen::Threads, KeyCode::Char('>')) => ReaderOperation::NextPage,
         (ReaderScreen::Threads, KeyCode::Char('<')) => ReaderOperation::PreviousPage,
         (ReaderScreen::Threads, KeyCode::Char(' ')) => ReaderOperation::StartSelectedThreads,
+        (ReaderScreen::Threads, KeyCode::Enter) => ReaderOperation::StartMarkedThreads,
         (ReaderScreen::Article, KeyCode::Char(' ')) => ReaderOperation::NextArticle,
         (ReaderScreen::Article, KeyCode::Char('n')) => ReaderOperation::NextUnreadArticle,
         (ReaderScreen::Article, KeyCode::Char('p')) => ReaderOperation::PreviousUnreadArticle,
@@ -258,7 +264,7 @@ impl ReaderState {
     }
 
     fn should_start_on_space(&self, page_count: usize) -> bool {
-        !self.marked_threads.is_empty() || self.thread_page + 1 >= page_count
+        self.thread_page + 1 >= page_count
     }
 
     fn start_reading(&mut self, state: &SessionState) -> Result<(), ReaderStateError> {
@@ -282,6 +288,16 @@ impl ReaderState {
             return Ok(());
         }
         self.open_reading_thread(state)
+    }
+
+    /// Starts reading the marked threads. Returns false, changing nothing,
+    /// when none are marked.
+    fn start_marked_threads(&mut self, state: &SessionState) -> Result<bool, ReaderStateError> {
+        if self.marked_threads.is_empty() {
+            return Ok(false);
+        }
+        self.start_reading(state)?;
+        Ok(true)
     }
 
     fn open_reading_thread(&mut self, state: &SessionState) -> Result<(), ReaderStateError> {
@@ -653,6 +669,11 @@ pub(crate) fn run_interactive_in_session(
                 }
                 redraw = true;
             }
+            ReaderOperation::StartMarkedThreads => {
+                redraw = reader_state
+                    .start_marked_threads(state)
+                    .map_err(ReaderError::State)?;
+            }
             ReaderOperation::CloseArticle => {
                 reader_state.close_article(state);
                 redraw = true;
@@ -1022,7 +1043,7 @@ mod tests {
             Some((0, true))
         );
         assert!(reader.marked_threads.contains(&5));
-        assert!(reader.should_start_on_space(pages.len()));
+        assert!(!reader.should_start_on_space(pages.len()));
         let mut output = Vec::new();
         render_thread_list(
             &mut output,
@@ -1055,13 +1076,44 @@ mod tests {
             Some((3, true))
         );
         assert!(reader.marked_threads.contains(&2));
+        assert!(!reader.should_start_on_space(pages.len()));
         reader.next_page(pages.len());
+        assert!(reader.should_start_on_space(pages.len()));
         reader.start_reading(&data).unwrap();
 
         assert_eq!(reader.screen(), ReaderScreen::Article);
         assert_eq!(reader.selected_article_number(), Some(5));
         assert_eq!(reader.reading_threads, [5, 2]);
         assert!(!data.is_read("comp.test", 5));
+    }
+
+    #[test]
+    fn return_starts_marked_threads_from_any_page_and_ignores_no_marks() {
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Enter)),
+            ReaderOperation::StartMarkedThreads
+        );
+        assert_eq!(
+            operation_for_key(ReaderScreen::Article, key(KeyCode::Enter)),
+            ReaderOperation::Ignore
+        );
+
+        let data = session_with_threads(5);
+        let mut reader = reader_for(&data);
+        let pages = thread_pages(&reader.threads, &data, 6);
+        assert!(pages.len() > 1);
+        assert_eq!(reader.start_marked_threads(&data), Ok(false));
+        assert_eq!(reader.screen(), ReaderScreen::Threads);
+        assert_eq!(reader.thread_page, 0);
+
+        assert_eq!(
+            reader.toggle_visible_thread('b', &pages[0]),
+            Some((1, true))
+        );
+        assert_eq!(reader.start_marked_threads(&data), Ok(true));
+        assert_eq!(reader.screen(), ReaderScreen::Article);
+        assert_eq!(reader.reading_threads, [4]);
+        assert!(!data.is_read("comp.test", 4));
     }
 
     #[test]

@@ -78,11 +78,13 @@ Keys:
 * `>`: advance to the next page; do nothing on the last page
 * `<`: go to the previous page
 * Space:
-  * if any groups are marked, start reading them immediately in display order;
-  * if no groups are marked and another page exists, advance to that page;
-  * on the last page, start reading marked groups in display order;
-  * if no groups are marked, behave as though all groups in the group were
-    selected and start reading them.
+  * on any page but the last, advance to the next page, whether or not any
+    groups are marked;
+  * on the last page, start reading the marked groups in display order, or,
+    if none are marked, behave as though all subscribed groups shown were selected and
+    start reading them.
+* Return: if any groups are marked, start reading them immediately in display
+  order from any page; if none are marked, do nothing.
 
 The `<` and `>` keys mean the literal characters, not the arrow keys.
 
@@ -181,11 +183,13 @@ Keys:
 * `>`: advance to the next page; do nothing on the last page
 * `<`: go to the previous page
 * Space:
-  * if any threads are marked, start reading them immediately in display order;
-  * if no threads are marked and another page exists, advance to that page;
-  * on the last page, start reading marked threads in display order;
-  * if no threads are marked, behave as though all threads in the group were
-    selected and start reading them.
+  * on any page but the last, advance to the next page, whether or not any
+    threads are marked;
+  * on the last page, start reading the marked threads in display order, or,
+    if none are marked, behave as though all threads in the group were selected and
+    start reading them.
+* Return: if any threads are marked, start reading them immediately in display
+  order from any page; if none are marked, do nothing.
 
 The `<` and `>` keys mean the literal characters, not the arrow keys.
 
