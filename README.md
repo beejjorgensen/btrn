@@ -27,6 +27,11 @@ mkdir -p ~/.config/btrn
 echo 'alt.test:' > ~/.config/btrn/newsrc
 ```
 
+(The only way to add newsgroups currently is to manually add them to
+your `newsrc`. And there's no way to list them. So I hope you know what
+groups you like. [Check out some newsgroup lists
+here](https://beej.us/usenet/).)
+
 Also add a `~/.config/btrn/config.toml` file. Here are a couple
 examples. Replace Eternal September with your server.
 
