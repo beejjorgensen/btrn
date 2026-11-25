@@ -38,7 +38,11 @@ pub enum ReaderOperation {
     NextArticle,
     NextUnreadArticle,
     PreviousUnreadArticle,
+    /// `F`: post a followup that quotes the article.
     Followup,
+    /// `f`: ask whether this starts an unrelated topic, then post a
+    /// followup without quoting or a new thread.
+    UnquotedPost,
     /// `[`, `]`, `(`, `)`, and the arrow keys: move through the thread
     /// window's graph, fetching a placeholder by message ID when the move
     /// lands on one.
@@ -81,6 +85,7 @@ pub fn operation_for_key(screen: ReaderScreen, key: KeyEvent) -> ReaderOperation
             ReaderOperation::RestartArticle(HeaderMode::All)
         }
         (ReaderScreen::Article, KeyCode::Char('F')) => ReaderOperation::Followup,
+        (ReaderScreen::Article, KeyCode::Char('f')) => ReaderOperation::UnquotedPost,
         (ReaderScreen::Article, KeyCode::Char('[') | KeyCode::Left) => {
             ReaderOperation::ThreadMove(ThreadMotion::Parent)
         }
@@ -718,7 +723,8 @@ pub(crate) fn run_interactive_in_session(
             ReaderOperation::PreviousUnreadArticle => {
                 redraw = reader_state.previous_unread_article(state).is_some();
             }
-            ReaderOperation::Followup => {
+            operation @ (ReaderOperation::Followup | ReaderOperation::UnquotedPost) => {
+                use crate::terminal::posting::{run_post, run_unquoted_post, PostKind};
                 let Some(article_number) = reader_state.selected_article_number() else {
                     continue;
                 };
@@ -726,9 +732,13 @@ pub(crate) fn run_interactive_in_session(
                     continue;
                 };
                 let group = reader_state.threads.group_name.clone();
-                match crate::terminal::posting::run_followup(
-                    session, terminal, posting, &group, &article,
-                )? {
+                let exit = if operation == ReaderOperation::Followup {
+                    let quoting = PostKind::Followup(crate::posting::draft::Quote::Original);
+                    run_post(session, terminal, posting, &group, &article, &quoting)?
+                } else {
+                    run_unquoted_post(session, terminal, posting, &group, &article)?
+                };
+                match exit {
                     crate::terminal::posting::PostingExit::QuitApplication => {
                         return Ok(ReaderExit::QuitApplication)
                     }
@@ -1150,6 +1160,40 @@ mod tests {
             operation_for_key(ReaderScreen::Article, release),
             ReaderOperation::Ignore
         );
+    }
+
+    #[test]
+    fn lowercase_f_posts_without_quoting_from_both_article_prompts() {
+        let data = thread_session();
+        let mut reader = reader_for(&data);
+        reader.marked_threads.insert(10);
+        reader.start_reading(&data).unwrap();
+        reader.set_current_article(10, decoded_body("a\nb\nc"));
+        // The MORE prompt (first of three pages) and the end-of-article
+        // prompt share the article screen's dispatch.
+        for page in [0, 2] {
+            reader.article_page = page;
+            assert_eq!(
+                operation_for_key(reader.screen(), key(KeyCode::Char('f'))),
+                ReaderOperation::UnquotedPost
+            );
+            assert_eq!(
+                operation_for_key(reader.screen(), key(KeyCode::Char('F'))),
+                ReaderOperation::Followup
+            );
+        }
+        assert_eq!(
+            operation_for_key(ReaderScreen::Threads, key(KeyCode::Char('f'))),
+            ReaderOperation::ToggleThread('f')
+        );
+
+        // Leaving the posting screens, including `q` at the topic prompt,
+        // returns to the same article's end-of-article prompt.
+        reader.article_page = 0;
+        reader.show_last_article_page();
+        assert_eq!(reader.selected_article_number(), Some(10));
+        assert!(reader.cached_article(10).is_some());
+        assert_eq!(reader.article_page.min(2), 2);
     }
 
     #[test]

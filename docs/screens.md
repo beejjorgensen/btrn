@@ -323,6 +323,8 @@ Keys:
   `Article is not available.` for the others. Each notice lasts until the next
   redraw, and the current article stays selected.
 * `F`: post a followup that quotes this article (see [posting.md](./posting.md))
+* `f`: post a followup without quoting this article, or start a new thread in
+  this group (see [posting.md](./posting.md#followup-without-quoting--implemented))
 * Ctrl-C: exit the program (on every screen), saving newsrc
 
 ## Thread Hierarchy — Implemented

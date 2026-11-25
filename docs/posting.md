@@ -6,7 +6,9 @@ Status labels are defined in the [documentation index](./README.md).
 
 If the user is at the article view prompt (either the `MORE` prompt or
 the end-of-article prompt), they can hit `F` (capital `F`) to post a
-followup to the article being viewed.
+followup to the article being viewed, quoting it, or `f` (lowercase) to
+post a followup without quoting or start a new thread (see
+[Followup Without Quoting](#followup-without-quoting--implemented)).
 
 Posting never changes read state or newsrc.
 
@@ -14,11 +16,32 @@ Configuration keys are described in [persistence.md](./persistence.md),
 and the environment variables that override them in
 [environment.md](./environment.md).
 
-## Followup Without Quoting — Planned
+## Followup Without Quoting — Implemented
 
-Lowercase `f` will post a followup without quoting the article. The same
-composition flow will also be used to post new, non-reply threads.
-Details to be specified.
+At either article view prompt, `f` shows this question on a cleared
+alternate screen, with the cursor a space after `[ynq]`:
+
+```
+Are you starting an unrelated topic? [ynq]
+```
+
+The answer keys are case-sensitive and need no return. Any other key,
+including `Esc`, does nothing.
+
+* `n` posts a followup to the article without quoting it. Everything
+  matches `F` except the body (see
+  [Unquoted followups and new threads](#unquoted-followups-and-new-threads)).
+* `y` asks for the subject of a new thread on the line below the
+  question, `Subject: ` with the cursor after the space. Printable
+  characters are typed, Backspace deletes the last one, and return
+  accepts the line. Leading and trailing whitespace is trimmed. An empty
+  subject or `Esc` aborts like `q`.
+* `q` returns to the end-of-article prompt without posting.
+
+Ctrl-C exits the program from both prompts (see [Ctrl-C](#ctrl-c)).
+
+After `n`, or `y` and a subject, the flow continues with the
+[posting check](#posting-check) exactly as for `F`.
 
 ## Default Editor
 
@@ -27,7 +50,7 @@ shall default to `vim`.
 
 ## Posting Check
 
-Upon hitting `F` from the article viewer, first check that posting is
+Upon hitting `F`, or after the `f` prompts, first check that posting is
 allowed. Each of the following refuses posting with its own message:
 
 | Condition | Message |
@@ -49,7 +72,8 @@ posting, and a `200` reply allows it.
 ## Warning Screen
 
 If posting is allowed, the user will be presented with these three
-paragraphs of warning text:
+paragraphs of warning text. The first paragraph, about the attribution,
+is shown only for `F`, since nothing else quotes the article:
 
 ```
 (Be sure to double-check the attribution against the signature, and trim
@@ -64,7 +88,8 @@ Are you absolutely sure that you want to do this? [ny]
 ```
 
 If the followed-up-on article has `Followup-To: poster`, add this
-paragraph before the final question:
+paragraph before the final question (for followups only, not new
+threads):
 
 ```
 The author requested replies by email (Followup-To: poster).
@@ -78,7 +103,7 @@ It is not necessary to hit return after entering `n` or `y`.
 
 If the user answers anything other than `y` (case-sensitive), they
 immediately arrive at the end-of-article prompt, even if they pressed
-`F` from the `MORE` prompt.
+`F` or `f` from the `MORE` prompt.
 
 If the user enters `y` (case-sensitive), they begin the posting process.
 
@@ -201,6 +226,20 @@ The signature is quoted like any other text.
 If the body is empty, the attribution line is followed by a single `>`
 line.
 
+### Unquoted followups and new threads
+
+`f` then `n` composes the same headers as `F` and keeps the same
+`References`, but the body is empty: no attribution line and no quoted
+text.
+
+`f` then `y` composes the same header lines with these values, and an
+empty body:
+
+* `Newsgroups` is the current group, whatever the viewed article's
+  `Newsgroups` or `Followup-To` say.
+* `Subject` is the typed subject as given, with no `Re:` added.
+* There is no `References` header (see [References](#references)).
+
 ## After the Editor Exits
 
 All of the following are drawn on a cleared alternate screen. The
@@ -307,7 +346,8 @@ sent.
 `Message-ID`. If the header line would exceed 998 bytes, trim it as in
 RFC 5537 section 3.4.4, keeping the first message ID and as many of the
 most recent IDs as fit. If the followed-up-on article has no
-`Message-ID`, omit `References`.
+`Message-ID`, omit `References`. A new thread (`f` then `y`) has no
+`References`. btrn never sends `In-Reply-To`.
 
 ### Content type and encoding
 
@@ -404,7 +444,7 @@ user to the end-of-article prompt of the article they are following-up
 to.
 
 Returning to the end-of-article prompt moves the article view to its
-last page, even if `F` was pressed from the `MORE` prompt. The article
+last page, even if `F` or `f` was pressed from the `MORE` prompt. The article
 does not need to be redrawn; only the prompt is shown.
 
 ### If Some Headers Incorrect or Missing

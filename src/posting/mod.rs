@@ -91,7 +91,7 @@ mod tests {
             display_email: Some("me@example.com".to_owned()),
             organization: None,
         };
-        let draft = draft::compose_followup(&decoded, &identity);
+        let draft = draft::compose_followup(&decoded, &identity, draft::Quote::Original);
         let parsed = composition::parse_composition(draft.text.as_bytes());
         assert_eq!(parsed.errors, []);
         let posted = outgoing::build_article(
@@ -111,6 +111,75 @@ mod tests {
             headers.contains(&"Subject: Re: hello Control: cancel <victim@example.com>".to_owned())
         );
         assert!(!headers.iter().any(|line| line.starts_with("Control:")));
+    }
+
+    /// The posted headers of a draft after a user types `typed` below it.
+    fn posted_headers(draft: &draft::Draft, typed: &str) -> Vec<String> {
+        let parsed = composition::parse_composition(format!("{}{typed}", draft.text).as_bytes());
+        assert_eq!(parsed.errors, []);
+        outgoing::build_article(
+            &parsed.composition,
+            &outgoing::OutgoingContext {
+                references: &draft.references,
+                message_id: "<new@example.com>",
+                date: "d",
+            },
+        )
+        .iter()
+        .take_while(|line| !line.is_empty())
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect()
+    }
+
+    #[test]
+    fn unquoted_followups_and_new_threads_post_the_right_threading_headers() {
+        use crate::decoder::{DecodedArticle, DecodedHeader};
+        let parent = DecodedArticle {
+            headers: [
+                ("Newsgroups", "comp.test,comp.misc"),
+                ("Subject", "topic"),
+                ("Message-ID", "<orig@example.com>"),
+            ]
+            .map(|(name, value)| DecodedHeader {
+                name: name.to_owned(),
+                value: value.to_owned(),
+            })
+            .to_vec(),
+            body: "parent text\n".to_owned(),
+            issues: Vec::new(),
+        };
+        let identity = PostingIdentity {
+            display_name: None,
+            display_email: Some("me@example.com".to_owned()),
+            organization: None,
+        };
+        let header_lines = |headers: Vec<String>| {
+            headers
+                .into_iter()
+                .filter(|line| {
+                    ["Newsgroups:", "Subject:", "References:", "In-Reply-To:"]
+                        .iter()
+                        .any(|name| line.starts_with(name))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let quoted = draft::compose_followup(&parent, &identity, draft::Quote::Original);
+        let unquoted = draft::compose_followup(&parent, &identity, draft::Quote::Nothing);
+        assert!(!unquoted.text.contains("parent text"));
+        let expected = [
+            "Newsgroups: comp.test,comp.misc",
+            "Subject: Re: topic",
+            "References: <orig@example.com>",
+        ];
+        assert_eq!(header_lines(posted_headers(&quoted, "reply\n")), expected);
+        assert_eq!(header_lines(posted_headers(&unquoted, "reply\n")), expected);
+
+        let new_thread = draft::compose_new_thread("comp.test", "fresh", &identity);
+        assert_eq!(
+            header_lines(posted_headers(&new_thread, "hello\n")),
+            ["Newsgroups: comp.test", "Subject: fresh"]
+        );
     }
 
     #[test]

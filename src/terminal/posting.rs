@@ -1,5 +1,5 @@
-//! The followup posting screens: posting check, warning, editor hand-off,
-//! and the finalization menu. Decisions are made by pure functions; the
+//! The posting screens: the `f` topic and subject prompts, posting check,
+//! warning, editor hand-off, and the finalization menu. Decisions are made by pure functions; the
 //! flow function only renders, reads keys, and calls the editor and NNTP.
 
 use crate::decoder::DecodedArticle;
@@ -8,7 +8,7 @@ use crate::nntp::active::PostingStatus;
 use crate::nntp::{NntpSession, ServerCapabilities};
 use crate::posting::compose_file::{run_editor, CompositionFile, EditorError};
 use crate::posting::composition::{parse_composition, Composition};
-use crate::posting::draft::compose_followup;
+use crate::posting::draft::{compose_followup, compose_new_thread, Quote};
 use crate::posting::outgoing::{build_article, format_date, generate_message_id, OutgoingContext};
 use crate::posting::PostingSettings;
 use crate::terminal::is_interrupt;
@@ -20,18 +20,111 @@ use crossterm::terminal::{self, Clear, ClearType};
 use std::io::{self, Write};
 use std::time::SystemTime;
 
-const WARNING_PARAGRAPHS: [&str; 2] = [
-    "(Be sure to double-check the attribution against the signature, and trim \
-     the quoted article down as much as possible.)",
+const ATTRIBUTION_PARAGRAPH: &str = "(Be sure to double-check the attribution against the \
+     signature, and trim the quoted article down as much as possible.)";
+const DISCLAIMER_PARAGRAPH: &str =
     "This program posts news to thousands of machines throughout the entire \
      civilized world.  Your message will cost the net hundreds if not \
      thousands of dollars to send everywhere.  Please be sure you know what \
-     you are doing.",
-];
+     you are doing.";
 const POSTER_PARAGRAPH: &str = "The author requested replies by email (Followup-To: poster).";
 const WARNING_QUESTION: &str = "Are you absolutely sure that you want to do this? [ny]";
 const UNCHANGED_WARNING: &str = "Warning: the article was not changed.";
 const CONTINUE_HINT: &str = "Press any key to continue.";
+const TOPIC_QUESTION: &str = "Are you starting an unrelated topic? [ynq]";
+const SUBJECT_PROMPT: &str = "Subject: ";
+
+/// What the posting flow composes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PostKind {
+    /// A followup to the article: `F` quotes it, `f` then `n` does not.
+    Followup(Quote),
+    /// `f` then `y`: a new thread in the current group with this subject.
+    NewThread(String),
+}
+
+impl PostKind {
+    fn quotes(&self) -> bool {
+        matches!(self, Self::Followup(Quote::Original))
+    }
+}
+
+/// The prompts `f` shows before the posting check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TopicPrompt {
+    /// `Are you starting an unrelated topic? [ynq]`
+    Question,
+    /// `Subject: ` and the text typed so far.
+    Subject(String),
+}
+
+/// The result of a key at a [`TopicPrompt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TopicStep {
+    /// Show this prompt and read another key.
+    Prompt(TopicPrompt),
+    Post(PostKind),
+    /// Back to the end-of-article prompt; nothing is posted.
+    Abort,
+    /// Ctrl-C: exit the program.
+    Quit,
+}
+
+impl TopicPrompt {
+    /// `y`, `n`, and `q` answer the question (case-sensitive); other keys,
+    /// including `Esc`, do nothing. At the subject prompt, Return submits,
+    /// Backspace deletes, `Esc` or an empty subject aborts, and printable
+    /// characters are typed. Ctrl-C exits from both.
+    pub(crate) fn handle_key(self, key: &KeyEvent) -> TopicStep {
+        if is_interrupt(key) {
+            return TopicStep::Quit;
+        }
+        let plain = key.kind == KeyEventKind::Press
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if !plain {
+            return TopicStep::Prompt(self);
+        }
+        match (self, key.code) {
+            (Self::Question, KeyCode::Char('y')) => TopicStep::Prompt(Self::Subject(String::new())),
+            (Self::Question, KeyCode::Char('n')) => {
+                TopicStep::Post(PostKind::Followup(Quote::Nothing))
+            }
+            (Self::Question, KeyCode::Char('q')) | (Self::Subject(_), KeyCode::Esc) => {
+                TopicStep::Abort
+            }
+            (Self::Subject(subject), KeyCode::Enter) => match subject.trim() {
+                "" => TopicStep::Abort,
+                subject => TopicStep::Post(PostKind::NewThread(subject.to_owned())),
+            },
+            (Self::Subject(mut subject), KeyCode::Backspace) => {
+                subject.pop();
+                TopicStep::Prompt(Self::Subject(subject))
+            }
+            (Self::Subject(mut subject), KeyCode::Char(character)) if !character.is_control() => {
+                subject.push(character);
+                TopicStep::Prompt(Self::Subject(subject))
+            }
+            (prompt, _) => TopicStep::Prompt(prompt),
+        }
+    }
+
+    /// The prompt's lines; the cursor goes after the last one, which ends
+    /// with its own trailing space.
+    pub(crate) fn lines(&self, width: usize) -> Vec<String> {
+        let mut lines = wrap_paragraph(TOPIC_QUESTION, width);
+        match self {
+            Self::Question => {
+                if let Some(last) = lines.last_mut() {
+                    last.push(' ');
+                }
+            }
+            Self::Subject(subject) => lines.push(format!("{SUBJECT_PROMPT}{subject}")),
+        }
+        lines
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostingExit {
@@ -60,9 +153,14 @@ pub(crate) fn posting_refusal(
     None
 }
 
-/// The warning screen's paragraphs, ending with the question.
-pub(crate) fn warning_paragraphs(followup_to_poster: bool) -> Vec<&'static str> {
-    let mut paragraphs = WARNING_PARAGRAPHS.to_vec();
+/// The warning screen's paragraphs, ending with the question. The
+/// attribution reminder is shown only when the article is quoted.
+pub(crate) fn warning_paragraphs(quotes: bool, followup_to_poster: bool) -> Vec<&'static str> {
+    let mut paragraphs = Vec::new();
+    if quotes {
+        paragraphs.push(ATTRIBUTION_PARAGRAPH);
+    }
+    paragraphs.push(DISCLAIMER_PARAGRAPH);
     if followup_to_poster {
         paragraphs.push(POSTER_PARAGRAPH);
     }
@@ -240,9 +338,12 @@ pub(crate) fn menu_lines(messages: &[String], menu: Menu, width: usize) -> Vec<S
 }
 
 /// The warning screen's lines; the cursor goes after the last one.
-pub(crate) fn warning_lines(followup_to_poster: bool, width: usize) -> Vec<String> {
+pub(crate) fn warning_lines(quotes: bool, followup_to_poster: bool, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    for (index, paragraph) in warning_paragraphs(followup_to_poster).iter().enumerate() {
+    for (index, paragraph) in warning_paragraphs(quotes, followup_to_poster)
+        .iter()
+        .enumerate()
+    {
         if index > 0 {
             lines.push(String::new());
         }
@@ -264,6 +365,12 @@ fn message_lines(messages: &[String], width: usize) -> Vec<String> {
 /// Draws `lines` on a cleared screen with the cursor after the last line,
 /// separated by a space.
 fn render_lines(output: &mut impl Write, lines: &[String]) -> io::Result<()> {
+    render_screen(output, lines, " ")
+}
+
+/// Draws `lines` on a cleared screen followed by `trailing`, leaving the
+/// cursor at the end.
+fn render_screen(output: &mut impl Write, lines: &[String], trailing: &str) -> io::Result<()> {
     queue!(output, Clear(ClearType::All), MoveTo(0, 0), Show)?;
     let sanitized = lines
         .iter()
@@ -280,18 +387,28 @@ fn render_lines(output: &mut impl Write, lines: &[String]) -> io::Result<()> {
         })
         .collect::<Vec<_>>();
     output.write_all(sanitized.join("\r\n").as_bytes())?;
-    output.write_all(b" ")?;
+    output.write_all(trailing.as_bytes())?;
     output.flush()
 }
 
-/// Renders a screen and waits for a key press, re-rendering on resize.
+/// Renders a screen with the cursor a space after its last line and waits
+/// for a key press, re-rendering on resize.
 fn prompt(
     terminal: &mut TerminalSession,
     lines: impl Fn(usize) -> Vec<String>,
 ) -> io::Result<KeyEvent> {
+    prompt_after(terminal, " ", lines)
+}
+
+/// Like [`prompt`], with `trailing` after the last line.
+fn prompt_after(
+    terminal: &mut TerminalSession,
+    trailing: &str,
+    lines: impl Fn(usize) -> Vec<String>,
+) -> io::Result<KeyEvent> {
     loop {
         let (width, _) = terminal::size()?;
-        render_lines(&mut terminal.output, &lines(usize::from(width)))?;
+        render_screen(&mut terminal.output, &lines(usize::from(width)), trailing)?;
         loop {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => return Ok(key),
@@ -312,13 +429,39 @@ fn show_messages(terminal: &mut TerminalSession, messages: &[String]) -> io::Res
     })
 }
 
-/// Runs the `F` followup flow for `article` in `group`.
-pub(crate) fn run_followup(
+/// Runs `f` for `article` in `group`: asks whether this is an unrelated
+/// topic, then posts an unquoted followup (`n`) or a new thread (`y`)
+/// through [`run_post`].
+pub(crate) fn run_unquoted_post(
     session: &mut NntpSession,
     terminal: &mut TerminalSession,
     settings: &PostingSettings,
     group: &str,
     article: &DecodedArticle,
+) -> io::Result<PostingExit> {
+    let mut screen = TopicPrompt::Question;
+    loop {
+        let key = prompt_after(terminal, "", |width| screen.lines(width))?;
+        match screen.handle_key(&key) {
+            TopicStep::Prompt(next) => screen = next,
+            TopicStep::Post(kind) => {
+                return run_post(session, terminal, settings, group, article, &kind)
+            }
+            TopicStep::Abort => return Ok(PostingExit::ReturnToArticle),
+            TopicStep::Quit => return Ok(PostingExit::QuitApplication),
+        }
+    }
+}
+
+/// Runs the posting flow from the posting check on: `F` enters here with a
+/// quoting followup, and `f` after its prompts.
+pub(crate) fn run_post(
+    session: &mut NntpSession,
+    terminal: &mut TerminalSession,
+    settings: &PostingSettings,
+    group: &str,
+    article: &DecodedArticle,
+    kind: &PostKind,
 ) -> io::Result<PostingExit> {
     let checks_group = session.posting_allowed()
         && session
@@ -348,9 +491,12 @@ pub(crate) fn run_followup(
         return show_messages(terminal, &[refusal]);
     }
 
-    let draft = compose_followup(article, &settings.identity);
+    let draft = match kind {
+        PostKind::Followup(quote) => compose_followup(article, &settings.identity, *quote),
+        PostKind::NewThread(subject) => compose_new_thread(group, subject, &settings.identity),
+    };
     let key = prompt(terminal, |width| {
-        warning_lines(draft.followup_to_poster, width)
+        warning_lines(kind.quotes(), draft.followup_to_poster, width)
     })?;
     if is_interrupt(&key) {
         return Ok(PostingExit::QuitApplication);
@@ -512,18 +658,162 @@ mod tests {
 
     #[test]
     fn warning_wraps_cleanly_and_ends_with_the_question() {
-        let lines = warning_lines(false, 40);
+        let lines = warning_lines(true, false, 40);
         assert!(lines.iter().all(|line| line.chars().count() <= 40));
         assert_eq!(lines[0], "(Be sure to double-check the attribution");
         assert_eq!(lines.last().unwrap(), "do this? [ny]");
         let blank = lines.iter().filter(|line| line.is_empty()).count();
         assert_eq!(blank, 2);
         assert_eq!(
-            warning_lines(false, 500)[2],
-            WARNING_PARAGRAPHS[1],
+            warning_lines(true, false, 500)[2],
+            DISCLAIMER_PARAGRAPH,
             "spacing between sentences is preserved"
         );
-        assert!(warning_lines(true, 200).contains(&POSTER_PARAGRAPH.to_owned()));
+        assert!(warning_lines(true, true, 200).contains(&POSTER_PARAGRAPH.to_owned()));
+    }
+
+    #[test]
+    fn unquoted_warning_starts_with_the_disclaimer() {
+        assert_eq!(
+            warning_lines(false, false, 500),
+            [DISCLAIMER_PARAGRAPH, "", WARNING_QUESTION]
+        );
+        assert_eq!(
+            warning_lines(false, true, 500),
+            [
+                DISCLAIMER_PARAGRAPH,
+                "",
+                POSTER_PARAGRAPH,
+                "",
+                WARNING_QUESTION
+            ]
+        );
+    }
+
+    /// Feeds `keys` to the `f` prompts until one finishes them.
+    fn topic_outcome(keys: &[KeyEvent]) -> TopicStep {
+        let mut screen = TopicPrompt::Question;
+        for key in keys {
+            match screen.handle_key(key) {
+                TopicStep::Prompt(next) => screen = next,
+                done => return done,
+            }
+        }
+        TopicStep::Prompt(screen)
+    }
+
+    fn typed(text: &str) -> Vec<KeyEvent> {
+        text.chars().map(|c| key(KeyCode::Char(c))).collect()
+    }
+
+    #[test]
+    fn topic_question_n_posts_an_unquoted_followup() {
+        assert_eq!(
+            topic_outcome(&typed("n")),
+            TopicStep::Post(PostKind::Followup(Quote::Nothing))
+        );
+        assert!(!PostKind::Followup(Quote::Nothing).quotes());
+        assert!(PostKind::Followup(Quote::Original).quotes());
+    }
+
+    #[test]
+    fn topic_question_y_reads_a_subject_for_a_new_thread() {
+        let mut keys = typed("yHelo");
+        keys.push(key(KeyCode::Backspace));
+        keys.extend(typed("lo, wörld "));
+        keys.push(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        keys.push(key(KeyCode::Enter));
+        assert_eq!(
+            topic_outcome(&keys),
+            TopicStep::Post(PostKind::NewThread("Hello, wörld W".to_owned()))
+        );
+        assert!(!PostKind::NewThread("s".to_owned()).quotes());
+    }
+
+    #[test]
+    fn topic_question_q_returns_to_the_article() {
+        assert_eq!(topic_outcome(&typed("q")), TopicStep::Abort);
+    }
+
+    #[test]
+    fn empty_or_escaped_subject_aborts() {
+        assert_eq!(
+            topic_outcome(&[key(KeyCode::Char('y')), key(KeyCode::Enter)]),
+            TopicStep::Abort
+        );
+        let mut blank = typed("y   ");
+        blank.push(key(KeyCode::Enter));
+        assert_eq!(topic_outcome(&blank), TopicStep::Abort);
+        let mut escaped = typed("ysubject");
+        escaped.push(key(KeyCode::Esc));
+        assert_eq!(topic_outcome(&escaped), TopicStep::Abort);
+    }
+
+    #[test]
+    fn control_c_exits_from_both_topic_prompts() {
+        let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(topic_outcome(&[control_c]), TopicStep::Quit);
+        assert_eq!(
+            topic_outcome(&[key(KeyCode::Char('y')), key(KeyCode::Char('s')), control_c]),
+            TopicStep::Quit
+        );
+    }
+
+    #[test]
+    fn invalid_keys_at_the_topic_question_are_ignored() {
+        for invalid in [
+            key(KeyCode::Char('x')),
+            key(KeyCode::Char('Y')),
+            key(KeyCode::Char('N')),
+            key(KeyCode::Char('Q')),
+            key(KeyCode::Esc),
+            key(KeyCode::Enter),
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+        ] {
+            assert_eq!(
+                TopicPrompt::Question.handle_key(&invalid),
+                TopicStep::Prompt(TopicPrompt::Question),
+                "{invalid:?}"
+            );
+        }
+        let mut keys = typed("xQ");
+        keys.push(key(KeyCode::Char('n')));
+        assert_eq!(
+            topic_outcome(&keys),
+            TopicStep::Post(PostKind::Followup(Quote::Nothing))
+        );
+    }
+
+    #[test]
+    fn subject_ignores_control_keys_and_backspace_on_empty() {
+        let mut keys = typed("y");
+        keys.push(key(KeyCode::Backspace));
+        keys.push(key(KeyCode::Tab));
+        keys.push(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        keys.push(key(KeyCode::Char('\u{1b}')));
+        assert_eq!(
+            topic_outcome(&keys),
+            TopicStep::Prompt(TopicPrompt::Subject(String::new()))
+        );
+    }
+
+    #[test]
+    fn topic_prompts_put_the_cursor_after_their_text() {
+        assert_eq!(
+            TopicPrompt::Question.lines(80),
+            ["Are you starting an unrelated topic? [ynq] "]
+        );
+        assert_eq!(
+            TopicPrompt::Subject(String::new()).lines(80),
+            [TOPIC_QUESTION, "Subject: "]
+        );
+        assert_eq!(
+            TopicPrompt::Subject("Hi".to_owned()).lines(80),
+            [TOPIC_QUESTION, "Subject: Hi"]
+        );
+        let mut output = Vec::new();
+        render_screen(&mut output, &TopicPrompt::Question.lines(80), "").unwrap();
+        assert!(String::from_utf8(output).unwrap().ends_with("[ynq] "));
     }
 
     #[test]

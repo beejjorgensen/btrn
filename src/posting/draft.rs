@@ -1,4 +1,5 @@
-//! Builds the composition file's initial text for a followup.
+//! Builds the composition file's initial text for a followup or a new
+//! thread.
 
 use super::{nonblank, PostingIdentity};
 use crate::decoder::DecodedArticle;
@@ -9,16 +10,29 @@ const ATTRIBUTION_LIMIT: usize = 72;
 /// The initial composition text and the facts about the followed-up-on
 /// article that are needed again when posting.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FollowupDraft {
+pub struct Draft {
     pub text: String,
     /// The `References` for the followup: the original's references
-    /// followed by its message ID, or empty when it has no valid message ID.
+    /// followed by its message ID, or empty when it has no valid message ID
+    /// or the draft starts a new thread.
     pub references: Vec<MessageId>,
     /// The original article asked for replies by email.
     pub followup_to_poster: bool,
 }
 
-pub fn compose_followup(article: &DecodedArticle, identity: &PostingIdentity) -> FollowupDraft {
+/// Whether a followup's body starts with the attributed, quoted original
+/// (`F`) or empty (`f`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quote {
+    Original,
+    Nothing,
+}
+
+pub fn compose_followup(
+    article: &DecodedArticle,
+    identity: &PostingIdentity,
+    quote: Quote,
+) -> Draft {
     let header = |name: &str| {
         nonblank(
             article
@@ -56,9 +70,36 @@ pub fn compose_followup(article: &DecodedArticle, identity: &PostingIdentity) ->
         None => Vec::new(),
     };
 
-    let mut lines = vec![
+    let mut lines = template_headers(newsgroups, &subject, identity);
+    if quote == Quote::Original {
+        lines.extend(attribution_lines(
+            message_id.as_ref(),
+            header("From").unwrap_or("Anonymous"),
+        ));
+        lines.extend(quote_body(&article.body));
+    }
+    Draft {
+        text: draft_text(&lines),
+        references,
+        followup_to_poster,
+    }
+}
+
+/// A draft for a new thread in `group`: `subject` as given, no
+/// `References`, and an empty body.
+pub fn compose_new_thread(group: &str, subject: &str, identity: &PostingIdentity) -> Draft {
+    Draft {
+        text: draft_text(&template_headers(group, subject, identity)),
+        references: Vec::new(),
+        followup_to_poster: false,
+    }
+}
+
+/// The draft's header block and the blank line after it.
+fn template_headers(newsgroups: &str, subject: &str, identity: &PostingIdentity) -> Vec<String> {
+    vec![
         header_line("Newsgroups", newsgroups),
-        header_line("Subject", &subject),
+        header_line("Subject", subject),
         header_line("Followup-To", ""),
         header_line("From", &from_value(identity)),
         header_line(
@@ -67,20 +108,13 @@ pub fn compose_followup(article: &DecodedArticle, identity: &PostingIdentity) ->
         ),
         header_line("Keywords", ""),
         String::new(),
-    ];
-    lines.extend(attribution_lines(
-        message_id.as_ref(),
-        header("From").unwrap_or("Anonymous"),
-    ));
-    lines.extend(quote_body(&article.body));
+    ]
+}
 
+fn draft_text(lines: &[String]) -> String {
     let mut text = lines.join("\n");
     text.push('\n');
-    FollowupDraft {
-        text,
-        references,
-        followup_to_poster,
-    }
+    text
 }
 
 /// A draft header line. Values can come from the followed-up-on article, and
@@ -190,6 +224,10 @@ mod tests {
         }
     }
 
+    fn quoted_followup(article: &DecodedArticle, identity: &PostingIdentity) -> Draft {
+        compose_followup(article, identity, Quote::Original)
+    }
+
     fn full_identity() -> PostingIdentity {
         identity(
             Some("Example Name"),
@@ -200,7 +238,7 @@ mod tests {
 
     #[test]
     fn remote_line_breaks_cannot_add_header_lines() {
-        let draft = compose_followup(
+        let draft = quoted_followup(
             &article(
                 &[
                     ("Newsgroups", "comp.test"),
@@ -233,7 +271,7 @@ mod tests {
 
     #[test]
     fn composes_the_specified_template() {
-        let draft = compose_followup(
+        let draft = quoted_followup(
             &article(
                 &[
                     ("Newsgroups", "comp.lang.c,comp.misc"),
@@ -272,7 +310,7 @@ mod tests {
         assert!(!draft.followup_to_poster);
     }
 
-    fn template_line(draft: &FollowupDraft, name: &str) -> String {
+    fn template_line(draft: &Draft, name: &str) -> String {
         draft
             .text
             .lines()
@@ -284,7 +322,7 @@ mod tests {
     #[test]
     fn references_are_omitted_when_the_original_has_no_valid_message_id() {
         let references = |headers: &[(&str, &str)]| {
-            compose_followup(&article(headers, "q"), &full_identity()).references
+            quoted_followup(&article(headers, "q"), &full_identity()).references
         };
         let parent = ("References", "<root@example> <parent@example>");
         assert!(references(&[parent]).is_empty());
@@ -299,13 +337,13 @@ mod tests {
     #[test]
     fn newsgroups_come_from_followup_to_unless_it_is_poster() {
         let identity = full_identity();
-        let draft = compose_followup(
+        let draft = quoted_followup(
             &article(&[("Newsgroups", "a.b,c.d"), ("Followup-To", "c.d")], "x"),
             &identity,
         );
         assert_eq!(template_line(&draft, "Newsgroups"), "Newsgroups: c.d");
 
-        let draft = compose_followup(
+        let draft = quoted_followup(
             &article(&[("Newsgroups", "a.b"), ("Followup-To", " Poster ")], "x"),
             &identity,
         );
@@ -313,7 +351,7 @@ mod tests {
         assert!(draft.followup_to_poster);
         assert_eq!(template_line(&draft, "Followup-To"), "Followup-To:");
 
-        let draft = compose_followup(&article(&[], "x"), &identity);
+        let draft = quoted_followup(&article(&[], "x"), &identity);
         assert_eq!(template_line(&draft, "Newsgroups"), "Newsgroups:");
     }
 
@@ -324,7 +362,7 @@ mod tests {
                 .map(|value| vec![("Subject", value)])
                 .unwrap_or_default();
             template_line(
-                &compose_followup(&article(&headers, ""), &full_identity()),
+                &quoted_followup(&article(&headers, ""), &full_identity()),
                 "Subject",
             )
         };
@@ -340,7 +378,7 @@ mod tests {
     #[test]
     fn from_and_organization_follow_the_configured_identity() {
         let from = |identity: PostingIdentity| {
-            template_line(&compose_followup(&article(&[], ""), &identity), "From")
+            template_line(&quoted_followup(&article(&[], ""), &identity), "From")
         };
         assert_eq!(
             from(full_identity()),
@@ -357,7 +395,7 @@ mod tests {
         assert_eq!(from(identity(None, None, None)), "From:");
         assert_eq!(
             template_line(
-                &compose_followup(&article(&[], ""), &identity(None, None, None)),
+                &quoted_followup(&article(&[], ""), &identity(None, None, None)),
                 "Organization"
             ),
             "Organization:"
@@ -367,7 +405,7 @@ mod tests {
     #[test]
     fn attribution_handles_missing_parts_and_splits_long_lines() {
         let attribution = |headers: &[(&str, &str)]| {
-            compose_followup(&article(headers, "q"), &full_identity())
+            quoted_followup(&article(headers, "q"), &full_identity())
                 .text
                 .split("\n\n")
                 .nth(1)
@@ -406,18 +444,96 @@ mod tests {
 
     #[test]
     fn empty_body_quotes_as_a_single_marker() {
-        let draft = compose_followup(&article(&[("From", "P")], "\n\n"), &full_identity());
+        let draft = quoted_followup(&article(&[("From", "P")], "\n\n"), &full_identity());
         assert!(draft.text.ends_with("\nP wrote:\n>\n"));
-        let draft = compose_followup(&article(&[("From", "P")], ""), &full_identity());
+        let draft = quoted_followup(&article(&[("From", "P")], ""), &full_identity());
         assert!(draft.text.ends_with("\nP wrote:\n>\n"));
     }
 
     #[test]
     fn quoting_keeps_signatures_and_strips_carriage_returns() {
-        let draft = compose_followup(
+        let draft = quoted_followup(
             &article(&[("From", "P")], "text\r\n-- \r\nsig\r\n"),
             &full_identity(),
         );
         assert!(draft.text.ends_with("P wrote:\n>text\n>-- \n>sig\n"));
+    }
+
+    fn parent() -> DecodedArticle {
+        article(
+            &[
+                ("Newsgroups", "comp.lang.c,comp.misc"),
+                ("Followup-To", "comp.misc"),
+                ("Subject", "Previous Subject"),
+                ("From", "Poster <poster@example.com>"),
+                ("Message-ID", "<abc@example.org>"),
+                ("References", "<root@example.org>"),
+            ],
+            "quoted text\n",
+        )
+    }
+
+    const PARENT_FOLLOWUP_HEADERS: &str = "Newsgroups: comp.misc\n\
+         Subject: Re: Previous Subject\n\
+         Followup-To:\n\
+         From: Example Name <user@example.com>\n\
+         Organization: Yoyodyne Industries\n\
+         Keywords:\n\
+         \n";
+
+    #[test]
+    fn quoting_followup_keeps_its_headers_and_quotes_the_parent() {
+        let draft = quoted_followup(&parent(), &full_identity());
+        assert_eq!(
+            draft.text,
+            format!(
+                "{PARENT_FOLLOWUP_HEADERS}\
+                 In article <abc@example.org>, Poster <poster@example.com> wrote:\n\
+                 >quoted text\n"
+            )
+        );
+        assert_eq!(
+            draft.references,
+            ["<root@example.org>", "<abc@example.org>"]
+                .map(|id| MessageId::parse(id.as_bytes()).unwrap())
+        );
+    }
+
+    #[test]
+    fn unquoted_followup_has_the_same_headers_and_an_empty_body() {
+        let identity = full_identity();
+        let quoted = quoted_followup(&parent(), &identity);
+        let unquoted = compose_followup(&parent(), &identity, Quote::Nothing);
+        assert_eq!(unquoted.text, PARENT_FOLLOWUP_HEADERS);
+        assert!(quoted.text.starts_with(&unquoted.text));
+        assert_eq!(unquoted.references, quoted.references);
+        assert_eq!(unquoted.followup_to_poster, quoted.followup_to_poster);
+
+        let poster = article(&[("Newsgroups", "a.b"), ("Followup-To", "poster")], "x");
+        assert!(compose_followup(&poster, &identity, Quote::Nothing).followup_to_poster);
+    }
+
+    #[test]
+    fn new_thread_uses_the_typed_subject_and_current_group_without_references() {
+        let draft = compose_new_thread("comp.test", "Previous Subject", &full_identity());
+        assert_eq!(
+            draft.text,
+            "Newsgroups: comp.test\n\
+             Subject: Previous Subject\n\
+             Followup-To:\n\
+             From: Example Name <user@example.com>\n\
+             Organization: Yoyodyne Industries\n\
+             Keywords:\n\
+             \n"
+        );
+        assert!(draft.references.is_empty());
+        assert!(!draft.followup_to_poster);
+        assert_eq!(
+            template_line(
+                &compose_new_thread("comp.test", "re: kept as typed", &full_identity()),
+                "Subject"
+            ),
+            "Subject: re: kept as typed"
+        );
     }
 }

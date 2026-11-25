@@ -36,7 +36,7 @@ They are not repeated here.
 - [Persistence](./persistence.md): configuration and newsrc storage.
 - [Environment](./environment.md): environment variables that override
   configuration.
-- [Posting](./posting.md): followup composition, editor hand-off, header
+- [Posting](./posting.md): followup and new-thread composition, editor hand-off, header
   checks, and sending.
 - [Terminal screens](./screens.md): selector and article-view layouts,
   interactions, and key bindings.
